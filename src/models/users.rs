@@ -3,6 +3,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use anyhow::Result;
+use rand::{thread_rng, Rng};
+use rand::distributions::Alphanumeric;
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {
@@ -16,6 +18,11 @@ pub struct User {
     pub stellar_secret_key: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub email_verified: bool,
+    pub verification_token: Option<String>,
+    pub reset_token: Option<String>,
+    pub reset_token_expires: Option<DateTime<Utc>>,
+    pub status: String, // "active", "deleted", etc.
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,11 +38,27 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RequestPasswordResetRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResetPasswordRequest {
+    pub token: String,
+    pub new_password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VerifyEmailRequest {
+    pub token: String,
+}
+
 impl User {
     pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
         let user = sqlx::query_as!(
             User,
-            r#"SELECT * FROM users WHERE id = $1"#,
+            r#"SELECT * FROM users WHERE id = $1 AND status != 'deleted'"#,
             id
         )
         .fetch_optional(pool)
@@ -47,7 +70,7 @@ impl User {
     pub async fn find_by_email(pool: &PgPool, email: &str) -> Result<Option<Self>> {
         let user = sqlx::query_as!(
             User,
-            r#"SELECT * FROM users WHERE email = $1"#,
+            r#"SELECT * FROM users WHERE email = $1 AND status != 'deleted'"#,
             email
         )
         .fetch_optional(pool)
@@ -60,14 +83,21 @@ impl User {
         let id = Uuid::new_v4();
         let now = Utc::now();
         
+        // generate verification token
+        let verification_token = generate_random_token(32);
+        
         let user = sqlx::query_as!(
             User,
             r#"
-            INSERT INTO users (id, username, email, password_hash, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO users (
+                id, username, email, password_hash, created_at, updated_at,
+                email_verified, verification_token, status
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
             "#,
-            id, user.username, user.email, password_hash, now, now
+            id, user.username, user.email, password_hash, now, now,
+            false, Some(verification_token), "active"
         )
         .fetch_one(pool)
         .await?;
@@ -91,4 +121,92 @@ impl User {
         
         Ok(user)
     }
+    
+    pub async fn verify_email(pool: &PgPool, token: &str) -> Result<Option<Self>> {
+        let user = sqlx::query_as!(
+            User,
+            r#"
+            UPDATE users
+            SET email_verified = true, verification_token = NULL, updated_at = $1
+            WHERE verification_token = $2 AND status = 'active'
+            RETURNING *
+            "#,
+            Utc::now(), token
+        )
+        .fetch_optional(pool)
+        .await?;
+        
+        Ok(user)
+    }
+    
+    // request password reset
+    pub async fn request_password_reset(&self, pool: &PgPool) -> Result<String> {
+        let token = generate_random_token(32);
+        let expires = Utc::now() + chrono::Duration::hours(24);
+        
+        sqlx::query!(
+            r#"
+            UPDATE users
+            SET reset_token = $1, reset_token_expires = $2, updated_at = $3
+            WHERE id = $4
+            "#,
+            token, expires, Utc::now(), self.id
+        )
+        .execute(pool)
+        .await?;
+        
+        Ok(token)
+    }
+    
+    // reset password with token
+    pub async fn reset_password(pool: &PgPool, token: &str, new_password_hash: &str) -> Result<Option<Self>> {
+        let now = Utc::now();
+        
+        let user = sqlx::query_as!(
+            User,
+            r#"
+            UPDATE users
+            SET password_hash = $1, reset_token = NULL, reset_token_expires = NULL, updated_at = $2
+            WHERE reset_token = $3 AND reset_token_expires > $4 AND status = 'active'
+            RETURNING *
+            "#,
+            new_password_hash, now, token, now
+        )
+        .fetch_optional(pool)
+        .await?;
+        
+        Ok(user)
+    }
+    
+    // to soft delete account
+    pub async fn delete_account(&self, pool: &PgPool) -> Result<Self> {
+        let user = sqlx::query_as!(
+            User,
+            r#"
+            UPDATE users
+            SET status = 'deleted', email = $1, username = $2, updated_at = $3
+            WHERE id = $4
+            RETURNING *
+            "#,
+            format!("deleted_{}@deleted.com", self.id), // Anonymize email
+            format!("deleted_user_{}", self.id),        // Anonymize username
+            Utc::now(),
+            self.id
+        )
+        .fetch_one(pool)
+        .await?;
+        
+        Ok(user)
+    }
+}
+
+// Helper fn to generate random tokens
+fn generate_random_token(length: usize) -> String {
+    let rand_string: String = thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(length)
+        .map(char::from)
+        .collect();
+    
+    rand_string
 }

@@ -5,13 +5,13 @@ use chrono::{DateTime, Utc};
 use anyhow::Result;
 use rust_decimal::Decimal;
 
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, Clone)]
 pub struct TicketType {
     pub id: Uuid,
     pub event_id: Uuid,
     pub name: String,
     pub description: Option<String>,
-    pub price: Option<Decimal>,  // None here == free ticket
+    pub price: Option<Decimal>,  // None means free ticket
     pub currency: String,
     pub total_supply: Option<i32>,
     pub remaining: Option<i32>,
@@ -100,5 +100,47 @@ impl TicketType {
         }
         
         anyhow::bail!("No tickets remaining")
+    }
+    
+    // for cancellations
+    pub async fn increase_remaining(&self, pool: &PgPool, amount: i32) -> Result<Self> {
+        // Only increase if there's a limit on tickets
+        if self.total_supply.is_some() {
+            let ticket_type = sqlx::query_as!(
+                TicketType,
+                r#"
+                UPDATE ticket_types
+                SET remaining = remaining + $1, updated_at = $2
+                WHERE id = $3
+                RETURNING *
+                "#,
+                amount, Utc::now(), self.id
+            )
+            .fetch_one(pool)
+            .await?;
+            
+            return Ok(ticket_type);
+        }
+        
+        // if there's unlimited tickets, just return the current record
+        Ok(self.clone())
+    }
+    
+    // activate/deactivate ticket sales
+    pub async fn set_active_status(&self, pool: &PgPool, is_active: bool) -> Result<Self> {
+        let ticket_type = sqlx::query_as!(
+            TicketType,
+            r#"
+            UPDATE ticket_types
+            SET is_active = $1, updated_at = $2
+            WHERE id = $3
+            RETURNING *
+            "#,
+            is_active, Utc::now(), self.id
+        )
+        .fetch_one(pool)
+        .await?;
+        
+        Ok(ticket_type)
     }
 }
