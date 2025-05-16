@@ -18,7 +18,9 @@ pub struct Event {
     pub status: String,                // "active", "cancelled", "completed"
     pub banner_image_url: Option<String>,
     pub category: Option<String>,
-    pub tags: Option<Vec<String>>,     // Stored as JSONB in PostgreSQL
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,10 +116,10 @@ impl Event {
         let mut args = PgArguments::default();
         args.add(now);
         
-        // Track the parameter index
+        // track the parameter index
         let mut param_index = 2;
         
-        // Add each field that is provided in the update request
+        // add each field that is provided in the update request
         if let Some(title) = &update.title {
             query.push_str(&format!(", title = ${}", param_index));
             args.add(title);
@@ -194,12 +196,12 @@ impl Event {
     }
     
     pub async fn search(pool: &PgPool, search: SearchEventsRequest) -> Result<Vec<Self>> {
-        // Base query
+        // base query
         let mut query = String::from("SELECT * FROM events WHERE status != 'cancelled'");
         let mut args = PgArguments::default();
         let mut param_index = 1;
         
-        // Add search conditions based on the provided parameters
+        // add search conditions based on the provided parameters
         if let Some(q) = &search.query {
             let pattern = format!("%{}%", q);
             query.push_str(&format!(" AND (title ILIKE ${} OR description ILIKE ${})", 
@@ -235,7 +237,7 @@ impl Event {
         
         if let Some(tags) = &search.tags {
             if !tags.is_empty() {
-                // Convert tags array to JSONB array for proper PostgreSQL comparison
+                // convert tags array to JSONB array for proper PostgreSQL comparison
                 let tags_json = serde_json::to_value(tags)?;
                 query.push_str(&format!(" AND tags @> ${}", param_index));
                 args.add(tags_json);
@@ -245,7 +247,7 @@ impl Event {
         
         query.push_str(" ORDER BY start_time ASC");
         
-        // Add limit and offset with proper typecasting
+        // add limit and offset with proper typecasting
         let limit = search.limit.unwrap_or(10);
         query.push_str(&format!(" LIMIT ${}", param_index));
         args.add(limit);

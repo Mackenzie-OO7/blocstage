@@ -16,7 +16,6 @@ pub struct Ticket {
     pub updated_at: DateTime<Utc>,
     pub checked_in_at: Option<DateTime<Utc>>,
     pub checked_in_by: Option<Uuid>,
-    // for ticket pdf
     pub pdf_url: Option<String>,
 }
 
@@ -27,31 +26,36 @@ pub struct CheckInRequest {
 
 impl Ticket {
     pub async fn create(
-        pool: &PgPool, 
-        ticket_type_id: Uuid, 
-        owner_id: Uuid, 
-        qr_code: Option<String>
-    ) -> Result<Self> {
-        let id = Uuid::new_v4();
-        let now = Utc::now();
-        
-        let ticket = sqlx::query_as!(
-            Ticket,
-            r#"
-            INSERT INTO tickets (
-                id, ticket_type_id, owner_id, status, qr_code, created_at, updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING *
-            "#,
-            id, ticket_type_id, owner_id, "valid", qr_code, now, now
-        )
-        .fetch_one(pool)
-        .await?;
-        
-        Ok(ticket)
-    }
+    pool: &PgPool, 
+    ticket_type_id: Uuid, 
+    owner_id: Uuid, 
+    qr_code: Option<String>
+) -> Result<Self> {
+    let id = Uuid::new_v4();
+    let now = Utc::now();
     
+    let ticket = sqlx::query_as!(
+        Ticket,
+        r#"
+        INSERT INTO tickets (
+            id, ticket_type_id, owner_id, status, qr_code, 
+            created_at, updated_at, checked_in_at, checked_in_by, pdf_url
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING *
+        "#,
+        id, ticket_type_id, owner_id, "valid", qr_code, 
+        now, now, 
+        Option::<DateTime<Utc>>::None,
+        Option::<Uuid>::None,
+        Option::<String>::None
+    )
+    .fetch_one(pool)
+    .await?;
+    
+    Ok(ticket)
+}
+        
     pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
         let ticket = sqlx::query_as!(
             Ticket,
@@ -127,7 +131,6 @@ impl Ticket {
         Ok(ticket)
     }
     
-    // set PDF URL
     pub async fn set_pdf_url(&self, pool: &PgPool, pdf_url: &str) -> Result<Self> {
         let ticket = sqlx::query_as!(
             Ticket,
@@ -176,14 +179,8 @@ impl Ticket {
         Ok(ticket)
     }
     
-    //verify ticket authenticity
     pub async fn verify_authenticity(&self, pool: &PgPool) -> Result<bool> {
-        // If the ticket has an NFT identifier, verify it on the blockchain
         if let Some(nft_id) = &self.nft_identifier {
-            // inthe future, this would call a service on Stellar
-            // to verify the NFT ownership on the blockchain
-            
-            // but until then, we'll just check that it has a valid format and exists in our database
             let count = sqlx::query!(
                 r#"
                 SELECT COUNT(*) as count 
@@ -200,7 +197,6 @@ impl Ticket {
             return Ok(count > 0);
         }
         
-        // if no NFT, verify by database record only
         let count = sqlx::query!(
             r#"
             SELECT COUNT(*) as count 

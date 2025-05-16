@@ -3,8 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use anyhow::Result;
-use rand::{thread_rng, Rng};
-use rand::distributions::Alphanumeric;
+use rand::{distr::Alphanumeric, rng, Rng};
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {
@@ -110,7 +109,10 @@ impl User {
             User,
             r#"
             UPDATE users
-            SET stellar_public_key = $1, stellar_secret_key = $2, updated_at = $3
+            SET 
+                stellar_public_key = $1, 
+                stellar_secret_key = $2, 
+                updated_at = $3
             WHERE id = $4
             RETURNING *
             "#,
@@ -121,7 +123,7 @@ impl User {
         
         Ok(user)
     }
-    
+        
     pub async fn verify_email(pool: &PgPool, token: &str) -> Result<Option<Self>> {
         let user = sqlx::query_as!(
             User,
@@ -180,16 +182,26 @@ impl User {
     
     // to soft delete account
     pub async fn delete_account(&self, pool: &PgPool) -> Result<Self> {
+        // for now,be explicit about returned columns to avoid any SQLx caching issues
         let user = sqlx::query_as!(
             User,
             r#"
             UPDATE users
-            SET status = 'deleted', email = $1, username = $2, updated_at = $3
+            SET 
+                status = 'deleted',
+                email = $1, 
+                username = $2, 
+                updated_at = $3
             WHERE id = $4
-            RETURNING *
+            RETURNING 
+                id, username, email, password_hash, 
+                stellar_public_key, stellar_secret_key,
+                created_at, updated_at,
+                email_verified, verification_token,
+                reset_token, reset_token_expires, status
             "#,
-            format!("deleted_{}@deleted.com", self.id), // Anonymize email
-            format!("deleted_user_{}", self.id),        // Anonymize username
+            format!("deleted_{}@deleted.com", self.id),
+            format!("deleted_user_{}", self.id),
             Utc::now(),
             self.id
         )
@@ -200,9 +212,8 @@ impl User {
     }
 }
 
-// Helper fn to generate random tokens
 fn generate_random_token(length: usize) -> String {
-    let rand_string: String = thread_rng()
+    let rand_string: String = rng()
         .sample_iter(&Alphanumeric)
         .take(length)
         .map(char::from)

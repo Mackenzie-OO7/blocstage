@@ -7,15 +7,27 @@ edition = "2021"
 actix-rt = "2.10.0"
 actix-web = "4.10.2"
 anyhow = "1.0.98"
+aws-config = "1.6.2"
+aws-sdk-s3 = "1.85.0"
+base64 = "0.22.1"
 bcrypt = "0.17.0"
+bigdecimal = { version = "0.4.8", features = ["serde"] }
 chrono = { version = "0.4.41", features = ["serde"] }
 dotenv = "0.15.0"
 env_logger = "0.11.8"
+futures = "0.3.31"
 jsonwebtoken = "9.3.1"
+lettre = "0.11.16"
 log = "0.4.27"
+pdf-canvas = "0.7.0"
+printpdf = "0.8.2"
+qrcode = "0.14.1"
+rand = { version = "0.9.1", features = ["std"] }
+reqwest = { version = "0.12.15", features = ["json"] }
+rust_decimal = "1.37.1"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
-sqlx = { version = "0.8.5", features = ["postgres", "chrono", "uuid", "json", "runtime-tokio", "tls-native-tls"] }
+sqlx = { version = "0.8.5", features = ["postgres", "chrono", "uuid", "json", "runtime-tokio", "tls-native-tls", "runtime-tokio-native-tls", "bigdecimal"] }
 stellar_sdk = "0.1.4"
 thiserror = "2.0.12"
 tokio = { version = "1.45.0", features = ["full"] }
