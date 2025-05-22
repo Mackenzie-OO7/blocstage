@@ -7,9 +7,12 @@ pub mod user_controller;
 use actix_web::web;
 
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
-    auth_controller::configure(cfg);
-    event_controller::configure(cfg);
-    ticket_controller::configure(cfg);
-    transaction_controller::configure(cfg);
-    user_controller::configure(cfg);
+    cfg.service(
+        web::scope("/api")
+            .configure(auth_controller::configure)
+            .configure(event_controller::configure)
+            .configure(ticket_controller::configure)
+            .configure(transaction_controller::configure)
+            .configure(user_controller::configure)
+    );
 }

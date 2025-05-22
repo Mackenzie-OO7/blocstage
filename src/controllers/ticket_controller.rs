@@ -6,7 +6,7 @@ use crate::services::ticket_service::TicketService;
 use crate::middleware::auth::AuthenticatedUser;
 use sqlx::PgPool;
 use uuid::Uuid;
-use log::{error, info};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use anyhow::Result;
 
@@ -24,40 +24,28 @@ async fn create_ticket_service(pool: &PgPool) -> Result<TicketService> {
     TicketService::new(pool.clone()).await
 }
 
+// ============ TICKET TYPE MANAGEMENT ============
+
 pub async fn create_ticket_type(
     pool: web::Data<PgPool>,
     event_id: web::Path<Uuid>,
     ticket_data: web::Json<CreateTicketTypeRequest>,
     user: web::ReqData<AuthenticatedUser>,
 ) -> impl Responder {
-    match Event::find_by_id(&pool, *event_id).await {
-        Ok(Some(event)) => {
-            if event.organizer_id != user.id {
-                return HttpResponse::Forbidden().json(ErrorResponse {
-                    error: "You don't have permission to create ticket types for this event".to_string(),
-                });
-            }
-            
-            match TicketType::create(&pool, *event_id, ticket_data.into_inner()).await {
-                Ok(ticket_type) => {
-                    info!("Ticket type created: {} for event {}", ticket_type.id, event_id);
-                    HttpResponse::Created().json(ticket_type)
-                },
-                Err(e) => {
-                    error!("Failed to create ticket type: {}", e);
-                    HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to create ticket type. Please try again.".to_string(),
-                    })
-                },
-            }
+    let _event = match crate::middleware::auth::check_event_ownership(&pool, user.id, *event_id).await {
+        Ok(event) => event,
+        Err(response) => return response,
+    };
+    
+    match TicketType::create(&pool, *event_id, ticket_data.into_inner()).await {
+        Ok(ticket_type) => {
+            info!("Ticket type created: {} for event {} by user {}", ticket_type.id, event_id, user.id);
+            HttpResponse::Created().json(ticket_type)
         },
-        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "Event not found".to_string(),
-        }),
         Err(e) => {
-            error!("Failed to fetch event: {}", e);
+            error!("Failed to create ticket type: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to verify event ownership. Please try again.".to_string(),
+                error: "Failed to create ticket type. Please try again.".to_string(),
             })
         },
     }
@@ -85,62 +73,58 @@ pub async fn update_ticket_type_status(
 ) -> impl Responder {
     let (ticket_type_id, is_active) = path.into_inner();
     
-    match TicketType::find_by_id(&pool, ticket_type_id).await {
-        Ok(Some(ticket_type)) => {
-            match Event::find_by_id(&pool, ticket_type.event_id).await {
-                Ok(Some(event)) => {
-                    if event.organizer_id != user.id {
-                        return HttpResponse::Forbidden().json(ErrorResponse {
-                            error: "You don't have permission to update this ticket type".to_string(),
-                        });
-                    }
-                    
-                    match ticket_type.set_active_status(&pool, is_active).await {
-                        Ok(updated) => {
-                            info!("Ticket type {} status updated to {}", ticket_type_id, is_active);
-                            HttpResponse::Ok().json(updated)
-                        },
-                        Err(e) => {
-                            error!("Failed to update ticket type status: {}", e);
-                            HttpResponse::InternalServerError().json(ErrorResponse {
-                                error: "Failed to update ticket type status. Please try again.".to_string(),
-                            })
-                        },
-                    }
-                },
-                Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-                    error: "Event not found".to_string(),
-                }),
-                Err(e) => {
-                    error!("Failed to fetch event: {}", e);
-                    HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to verify event ownership. Please try again.".to_string(),
-                    })
-                },
-            }
+    let ticket_type = match TicketType::find_by_id(&pool, ticket_type_id).await {
+        Ok(Some(ticket_type)) => ticket_type,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(ErrorResponse {
+                error: "Ticket type not found".to_string(),
+            });
         },
-        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "Ticket type not found".to_string(),
-        }),
         Err(e) => {
             error!("Failed to fetch ticket type: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse {
+            return HttpResponse::InternalServerError().json(ErrorResponse {
                 error: "Failed to fetch ticket type. Please try again.".to_string(),
+            });
+        }
+    };
+    
+    let _event = match crate::middleware::auth::check_event_ownership(&pool, user.id, ticket_type.event_id).await {
+        Ok(event) => event,
+        Err(response) => return response,
+    };
+    
+    match ticket_type.set_active_status(&pool, is_active).await {
+        Ok(updated) => {
+            info!("Ticket type {} status updated to {} by user {}", ticket_type_id, is_active, user.id);
+            HttpResponse::Ok().json(updated)
+        },
+        Err(e) => {
+            error!("Failed to update ticket type status: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to update ticket type status. Please try again.".to_string(),
             })
         },
     }
 }
+
+// ============ TICKET PURCHASING ============
 
 pub async fn purchase_ticket(
     pool: web::Data<PgPool>,
     ticket_type_id: web::Path<Uuid>,
     user: web::ReqData<AuthenticatedUser>,
 ) -> impl Responder {
+    // to prevent fraud
+    let _verified_user = match crate::middleware::auth::require_verified_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+    
     match create_ticket_service(&pool).await {
         Ok(ticket_service) => {
             match ticket_service.purchase_ticket(*ticket_type_id, user.id).await {
                 Ok(ticket) => {
-                    info!("Ticket purchased: {} by user {}", ticket.id, user.id);
+                    info!("Ticket purchased: {} by verified user {}", ticket.id, user.id);
                     HttpResponse::Created().json(ticket)
                 },
                 Err(e) => {
@@ -168,6 +152,8 @@ pub async fn purchase_ticket(
         },
     }
 }
+
+// ============ TICKET VERIFICATION ============
 
 pub async fn verify_ticket(
     pool: web::Data<PgPool>,
@@ -209,11 +195,16 @@ pub async fn check_in_ticket(
     data: web::Json<CheckInRequest>,
     user: web::ReqData<AuthenticatedUser>,
 ) -> impl Responder {
-    match create_ticket_service(&pool).await {
+    // the check-in user has to be verified or say a staff member
+    let _verified_user = match crate::middleware::auth::require_verified_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+        match create_ticket_service(&pool).await {
         Ok(ticket_service) => {
             match ticket_service.check_in_ticket(data.ticket_id, user.id).await {
                 Ok(ticket) => {
-                    info!("Ticket checked in: {} by staff {}", ticket.id, user.id);
+                    info!("Ticket checked in: {} by verified staff {}", ticket.id, user.id);
                     HttpResponse::Ok().json(serde_json::json!({
                         "ticket": ticket,
                         "message": "Ticket has been successfully checked in"
@@ -245,22 +236,24 @@ pub async fn check_in_ticket(
     }
 }
 
+// ============ TICKET MANAGEMENT ============
+
 pub async fn generate_pdf_ticket(
     pool: web::Data<PgPool>,
     ticket_id: web::Path<Uuid>,
     user: web::ReqData<AuthenticatedUser>,
 ) -> impl Responder {
-    match create_ticket_service(&pool).await {
-        Ok(ticket_service) => {
-            // First check if the user is the ticket owner
-            match crate::models::ticket::Ticket::find_by_id(&pool, *ticket_id).await {
-                Ok(Some(ticket)) => {
-                    if ticket.owner_id != user.id {
-                        return HttpResponse::Forbidden().json(ErrorResponse {
-                            error: "You don't have permission to access this ticket".to_string(),
-                        });
-                    }
-                    
+    match crate::models::ticket::Ticket::find_by_id(&pool, *ticket_id).await {
+        Ok(Some(ticket)) => {
+            if ticket.owner_id != user.id {
+                return HttpResponse::Forbidden().json(ErrorResponse {
+                    error: "You don't have permission to access this ticket".to_string(),
+                });
+            }
+            
+            // PDF generation
+            match create_ticket_service(&pool).await {
+                Ok(ticket_service) => {
                     match ticket_service.generate_pdf_ticket(*ticket_id).await {
                         Ok(pdf_url) => {
                             info!("PDF ticket generated: {} for user {}", ticket_id, user.id);
@@ -277,21 +270,21 @@ pub async fn generate_pdf_ticket(
                         },
                     }
                 },
-                Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-                    error: "Ticket not found".to_string(),
-                }),
                 Err(e) => {
-                    error!("Failed to fetch ticket: {}", e);
+                    error!("Failed to initialize ticket service: {}", e);
                     HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to verify ticket ownership. Please try again.".to_string(),
+                        error: "Internal server error".to_string(),
                     })
                 },
             }
         },
+        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
+            error: "Ticket not found".to_string(),
+        }),
         Err(e) => {
-            error!("Failed to initialize ticket service: {}", e);
+            error!("Failed to fetch ticket: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                error: "Failed to verify ticket ownership. Please try again.".to_string(),
             })
         },
     }
@@ -302,16 +295,17 @@ pub async fn convert_to_nft(
     ticket_id: web::Path<Uuid>,
     user: web::ReqData<AuthenticatedUser>,
 ) -> impl Responder {
-    match create_ticket_service(&pool).await {
-        Ok(ticket_service) => {
-            match crate::models::ticket::Ticket::find_by_id(&pool, *ticket_id).await {
-                Ok(Some(ticket)) => {
-                    if ticket.owner_id != user.id {
-                        return HttpResponse::Forbidden().json(ErrorResponse {
-                            error: "You don't have permission to convert this ticket".to_string(),
-                        });
-                    }
-                    
+    match crate::models::ticket::Ticket::find_by_id(&pool, *ticket_id).await {
+        Ok(Some(ticket)) => {
+            if ticket.owner_id != user.id {
+                return HttpResponse::Forbidden().json(ErrorResponse {
+                    error: "You don't have permission to convert this ticket".to_string(),
+                });
+            }
+            
+            // NFT conversion
+            match create_ticket_service(&pool).await {
+                Ok(ticket_service) => {
                     match ticket_service.convert_to_nft(*ticket_id).await {
                         Ok(ticket) => {
                             info!("Ticket converted to NFT: {} for user {}", ticket_id, user.id);
@@ -337,21 +331,21 @@ pub async fn convert_to_nft(
                         },
                     }
                 },
-                Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-                    error: "Ticket not found".to_string(),
-                }),
                 Err(e) => {
-                    error!("Failed to fetch ticket: {}", e);
+                    error!("Failed to initialize ticket service: {}", e);
                     HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to verify ticket ownership. Please try again.".to_string(),
+                        error: "Internal server error".to_string(),
                     })
                 },
             }
         },
+        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
+            error: "Ticket not found".to_string(),
+        }),
         Err(e) => {
-            error!("Failed to initialize ticket service: {}", e);
+            error!("Failed to fetch ticket: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                error: "Failed to verify ticket ownership. Please try again.".to_string(),
             })
         },
     }
@@ -363,6 +357,7 @@ pub async fn transfer_ticket(
     data: web::Json<TransferTicketRequest>,
     user: web::ReqData<AuthenticatedUser>,
 ) -> impl Responder {
+    // ownership is checked in the service
     match create_ticket_service(&pool).await {
         Ok(ticket_service) => {
             match ticket_service.transfer_ticket(*ticket_id, user.id, data.recipient_id).await {
@@ -467,9 +462,93 @@ pub async fn get_user_tickets(
     }
 }
 
+// ============ ADMIN ENDPOINTS ============
+
+pub async fn admin_get_all_tickets(
+    pool: web::Data<PgPool>,
+    user: web::ReqData<AuthenticatedUser>,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+    
+    match sqlx::query_as!(
+        crate::models::ticket::Ticket,
+        "SELECT * FROM tickets ORDER BY created_at DESC LIMIT 100"
+    )
+    .fetch_all(&**pool)
+    .await {
+        Ok(tickets) => {
+            info!("Admin {} accessed all tickets", user.id);
+            HttpResponse::Ok().json(tickets)
+        },
+        Err(e) => {
+            error!("Failed to fetch all tickets for admin: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch tickets".to_string(),
+            })
+        }
+    }
+}
+
+pub async fn admin_cancel_any_ticket(
+    pool: web::Data<PgPool>,
+    ticket_id: web::Path<Uuid>,
+    user: web::ReqData<AuthenticatedUser>,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+    
+    let ticket = match crate::models::ticket::Ticket::find_by_id(&pool, *ticket_id).await {
+        Ok(Some(ticket)) => ticket,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(ErrorResponse {
+                error: "Ticket not found".to_string(),
+            });
+        },
+        Err(e) => {
+            error!("Failed to fetch ticket for admin cancellation: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch ticket".to_string(),
+            });
+        }
+    };
+    
+    match create_ticket_service(&pool).await {
+        Ok(ticket_service) => {
+            match ticket_service.cancel_ticket(*ticket_id, ticket.owner_id).await {
+                Ok(_) => {
+                    warn!("Admin {} cancelled ticket {} owned by user {}", user.id, ticket_id, ticket.owner_id);
+                    HttpResponse::Ok().json(serde_json::json!({
+                        "message": "Ticket has been cancelled by admin and refund has been processed"
+                    }))
+                },
+                Err(e) => {
+                    error!("Failed to cancel ticket as admin: {}", e);
+                    HttpResponse::InternalServerError().json(ErrorResponse {
+                        error: "Failed to cancel ticket".to_string(),
+                    })
+                },
+            }
+        },
+        Err(e) => {
+            error!("Failed to initialize ticket service: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            })
+        },
+    }
+}
+
+// ============ ROUTE CONFIGURATION ============
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/tickets")
+            // User ticket operations
             .route("/my-tickets", web::get().to(get_user_tickets))
             .route("/{ticket_id}/generate-pdf", web::post().to(generate_pdf_ticket))
             .route("/{ticket_id}/convert-to-nft", web::post().to(convert_to_nft))
@@ -478,6 +557,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     )
     .service(
         web::scope("/events/{event_id}/tickets")
+            // Ticket types for events
             .route("", web::get().to(get_ticket_types))
             .route("", web::post().to(create_ticket_type))
     )
@@ -490,5 +570,11 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         web::scope("/ticket-verification")
             .route("/{ticket_id}", web::get().to(verify_ticket))
             .route("/check-in", web::post().to(check_in_ticket))
+    )
+    .service(
+        web::scope("/admin/tickets")
+            // Admin-only ticket operations
+            .route("", web::get().to(admin_get_all_tickets))
+            .route("/{ticket_id}/cancel", web::post().to(admin_cancel_any_ticket))
     );
 }

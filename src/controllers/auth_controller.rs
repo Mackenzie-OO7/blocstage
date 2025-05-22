@@ -1,4 +1,5 @@
 use actix_web::{web, HttpResponse, Responder, ResponseError};
+use sqlx::PgPool;
 use crate::models::user::{CreateUserRequest, LoginRequest, VerifyEmailRequest, RequestPasswordResetRequest, ResetPasswordRequest};
 use crate::services::auth_service::AuthService;
 use log::{error, info};
@@ -223,4 +224,17 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/reset-password", web::post().to(reset_password))
             .route("/delete-account", web::delete().to(delete_account))
     );
+}
+
+pub async fn admin_dashboard(
+    pool: web::Data<PgPool>,
+    user: web::ReqData<AuthenticatedUser>,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+    
+    // Admin logic here...
+    HttpResponse::Ok().json("Admin dashboard data")
 }
