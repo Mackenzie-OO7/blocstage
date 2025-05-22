@@ -15,7 +15,7 @@ pub struct Event {
     pub end_time: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub status: String,                // "active", "cancelled", "completed"
+    pub status: String, // "active", "cancelled", "completed"
     pub banner_image_url: Option<String>,
     pub category: Option<String>,
     #[sqlx(default)]
