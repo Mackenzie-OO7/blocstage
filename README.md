@@ -1,4 +1,4 @@
-# BlocStage: The Future of On-Chain Events, Engagement, and Ecosystem Rewards
+# BlocStage: The Future of On-Chain Events, Engagement, and Ecosystem Rewards on Stellar
 
 ## Overview
 BlocStage is an all-in-one event and community management platform that merges traditional event organisation with cutting-edge Web3 capabilities.
