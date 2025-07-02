@@ -4,6 +4,7 @@ use rand::{distr::Alphanumeric, rng, Rng};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
+use crate::services::crypto::KeyEncryption;
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {
@@ -15,6 +16,7 @@ pub struct User {
     pub stellar_public_key: Option<String>,
     #[serde(skip_serializing)]
     pub stellar_secret_key: Option<String>,
+    pub stellar_secret_key_encrypted: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub email_verified: bool,
@@ -108,7 +110,7 @@ impl User {
             false,
             Some(verification_token),
             "active",
-            "user" // ADD "user" HERE
+            "user"
         )
         .fetch_one(pool)
         .await?;
@@ -122,19 +124,23 @@ impl User {
         public_key: &str,
         secret_key: &str,
     ) -> Result<Self> {
+        let key_encryption = KeyEncryption::new();
+        let encrypted_secret = key_encryption.encrypt_secret_key(secret_key)
+            .map_err(|e| anyhow::anyhow!("Failed to encrypt secret key: {}", e))?;
+        
         let user = sqlx::query_as!(
             User,
             r#"
             UPDATE users
             SET 
                 stellar_public_key = $1, 
-                stellar_secret_key = $2, 
+                stellar_secret_key_encrypted = $2, 
                 updated_at = $3
             WHERE id = $4
             RETURNING *
             "#,
             public_key,
-            secret_key,
+            encrypted_secret,
             Utc::now(),
             self.id
         )
@@ -142,6 +148,16 @@ impl User {
         .await?;
 
         Ok(user)
+    }
+
+    pub fn decrypt_stellar_secret(&self) -> Result<String, Box<dyn std::error::Error>> {
+        match &self.stellar_secret_key_encrypted {
+            Some(encrypted) => {
+                let key_encryption = KeyEncryption::new();
+                key_encryption.decrypt_secret_key(encrypted)
+            },
+            None => Err("No encrypted secret key found".into()),
+        }
     }
 
     pub async fn verify_email(pool: &PgPool, token: &str) -> Result<Option<Self>> {
@@ -224,7 +240,7 @@ impl User {
             WHERE id = $4
             RETURNING 
                 id, username, email, password_hash, 
-                stellar_public_key, stellar_secret_key,
+                stellar_public_key, stellar_secret_key, stellar_secret_key_encrypted,
                 created_at, updated_at,
                 email_verified, verification_token,
                 reset_token, reset_token_expires, status, role
