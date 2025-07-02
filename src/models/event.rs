@@ -3,6 +3,7 @@ use sqlx::{PgPool, postgres::PgArguments, Arguments};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use anyhow::Result;
+use log::{info, error};
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Event {
@@ -60,9 +61,30 @@ pub struct SearchEventsRequest {
 }
 
 impl Event {
-    pub async fn create(pool: &PgPool, organizer_id: Uuid, event: CreateEventRequest) -> Result<Self> {
+     pub async fn create(pool: &PgPool, organizer_id: Uuid, event: CreateEventRequest) -> Result<Self> {
         let id = Uuid::new_v4();
         let now = Utc::now();
+        
+        // just debug logging
+        info!("🎪 Creating event with:");
+        info!("   - id: {}", id);
+        info!("   - organizer_id: {}", organizer_id);
+        info!("   - title: {}", event.title);
+        info!("   - start_time: {}", event.start_time);
+        info!("   - end_time: {}", event.end_time);
+        info!("   - tags: {:?}", event.tags);
+        
+        let tags_json: Option<serde_json::Value> = match event.tags {
+            Some(tags) => {
+                let json_val = serde_json::to_value(tags)?;
+                info!("   - tags converted to JSON: {}", json_val);
+                Some(json_val)
+            },
+            None => {
+                info!("   - no tags provided");
+                None
+            }
+        };
         
         let event = sqlx::query_as!(
             Event,
@@ -77,11 +99,17 @@ impl Event {
             "#,
             id, organizer_id, event.title, event.description, event.location, 
             event.start_time, event.end_time, now, now,
-            "active", event.banner_image_url, event.category, event.tags as _
+            "active", event.banner_image_url, event.category, 
+            tags_json
         )
         .fetch_one(pool)
-        .await?;
+        .await
+        .map_err(|e| {
+            error!("❌ Database error creating event: {}", e);
+            e
+        })?;
         
+        info!("✅ Event created successfully: {}", event.id);
         Ok(event)
     }
     
@@ -116,7 +144,6 @@ impl Event {
         let mut args = PgArguments::default();
         args.add(now);
         
-        // track the parameter index
         let mut param_index = 2;
         
         // add each field that is provided in the update request
@@ -196,7 +223,6 @@ impl Event {
     }
     
     pub async fn search(pool: &PgPool, search: SearchEventsRequest) -> Result<Vec<Self>> {
-        // base query
         let mut query = String::from("SELECT * FROM events WHERE status != 'cancelled'");
         let mut args = PgArguments::default();
         let mut param_index = 1;

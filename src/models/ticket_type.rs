@@ -11,7 +11,7 @@ pub struct TicketType {
     pub event_id: Uuid,
     pub name: String,
     pub description: Option<String>,
-    pub price: Option<BigDecimal>,  // None means free ticket
+    pub price: Option<BigDecimal>,  // None == free ticket
     pub currency: String,
     pub total_supply: Option<i32>,
     pub remaining: Option<i32>,
@@ -199,7 +199,6 @@ impl TicketType {
             });
         }
         
-        // if there's unlimited tickets, just return the current record
         Ok(self.clone())
     }
     
@@ -233,12 +232,10 @@ impl TicketType {
         })
     }
     
-    // check ticket availability
     pub fn is_available(&self) -> bool {
         if !self.is_active {
             return false;
         }
-        
         
         match self.remaining {
             Some(remaining) => remaining > 0,

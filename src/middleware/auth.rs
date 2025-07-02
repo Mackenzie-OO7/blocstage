@@ -1,16 +1,17 @@
 use crate::models::event::Event;
 use crate::models::user::User;
-use crate::services::auth_service::AuthService;
+use crate::services::auth::AuthService;
 use actix_web::{
-    dev::Payload, error::ErrorUnauthorized, http, web, Error, FromRequest, HttpRequest, HttpResponse,
+    dev::Payload, error::ErrorUnauthorized, http, web, Error, FromRequest, HttpRequest,
+    HttpResponse, Result as ActixResult,
 };
 use futures::future::{ready, Ready};
-use log::{error, warn};
+use log::{error, warn, info, debug};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AuthenticatedUser {
     pub id: Uuid,
 }
@@ -20,56 +21,72 @@ impl FromRequest for AuthenticatedUser {
     type Future = Ready<Result<Self, Self::Error>>;
 
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        info!("🔑 Auth middleware called for: {}", req.path());
+        
         let auth_header = match req.headers().get(http::header::AUTHORIZATION) {
-            Some(header) => header,
+            Some(header) => {
+                info!("✅ Authorization header found");
+                header
+            },
             None => {
-                warn!("Request without authorization header");
+                warn!("❌ Request without authorization header");
                 return ready(Err(ErrorUnauthorized("Authorization header required")));
             }
         };
 
         let auth_str = match auth_header.to_str() {
-            Ok(str) => str,
+            Ok(str) => {
+                info!("✅ Authorization header parsed successfully");
+                str
+            },
             Err(_) => {
-                warn!("Invalid authorization header format");
-                return ready(Err(ErrorUnauthorized(
-                    "Invalid authorization header format",
-                )));
+                warn!("❌ Invalid authorization header format");
+                return ready(Err(ErrorUnauthorized("Invalid authorization header format")));
             }
         };
 
         if !auth_str.starts_with("Bearer ") {
-            warn!("Authorization header without Bearer scheme");
+            warn!("❌ Authorization header without Bearer scheme");
             return ready(Err(ErrorUnauthorized("Bearer token required")));
         }
 
-        let token = &auth_str[7..]; // Skip "Bearer"
+        let token = &auth_str[7..];
+        info!("🎫 Token extracted, length: {}", token.len());
 
         if token.trim().is_empty() {
-            warn!("Empty token provided");
+            warn!("❌ Empty token provided");
             return ready(Err(ErrorUnauthorized("Token cannot be empty")));
         }
 
         let pool = match req.app_data::<web::Data<sqlx::PgPool>>() {
-            Some(pool) => pool,
+            Some(pool) => {
+                info!("🗄️ Database pool found");
+                pool
+            },
             None => {
-                error!("Database pool not found in app data");
+                error!("❌ Database pool not found in app data");
                 return ready(Err(ErrorUnauthorized("Internal server error")));
             }
         };
 
-        let auth_service = match AuthService::new(pool.get_ref().clone()) {
-            Ok(service) => service,
+        let auth = match AuthService::new(pool.get_ref().clone()) {
+            Ok(service) => {
+                info!("🔧 Auth service created successfully");
+                service
+            },
             Err(e) => {
-                error!("Failed to create auth service: {}", e);
+                error!("❌ Failed to create auth service: {}", e);
                 return ready(Err(ErrorUnauthorized("Internal server error")));
             }
         };
 
-        match auth_service.verify_token(token) {
-            Ok(user_id) => ready(Ok(AuthenticatedUser { id: user_id })),
+        match auth.verify_token(token) {
+            Ok(user_id) => {
+                info!("🎉 Token verified successfully for user: {}", user_id);
+                ready(Ok(AuthenticatedUser { id: user_id }))
+            },
             Err(e) => {
-                warn!("Token verification failed: {}", e);
+                warn!("❌ Token verification failed: {}", e);
                 ready(Err(ErrorUnauthorized("Invalid or expired token")))
             }
         }

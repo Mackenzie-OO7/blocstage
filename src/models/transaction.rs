@@ -33,7 +33,7 @@ pub struct RefundRequest {
 }
 
 impl Transaction {
-    // TODO: fix the generate_random_receipt_suffix function
+    // TODO: fix `generate_random_receipt_suffix`
     fn generate_random_receipt_suffix() -> String {
         use rand::rng;
 
@@ -210,13 +210,13 @@ impl Transaction {
         Ok(transaction)
     }
 
+        // TODO: implement refund logic based on timing/cancellations
     pub async fn process_refund(
         &self,
         pool: &PgPool,
         amount: Option<BigDecimal>,
         reason: Option<String>,
     ) -> Result<Self> {
-        // if refund amount isn't specified, refund full amount
         let refund_amount = amount.unwrap_or_else(|| self.amount.clone());
         if refund_amount > self.amount {
             anyhow::bail!("Refund amount cannot exceed original transaction amount");
@@ -324,6 +324,8 @@ impl Transaction {
         let receipt_url = format!("/receipts/{}.pdf", receipt_id);
         Ok(receipt_url)
     }
+
+    // TODO: Allow users search for transactions
 
     /*
     pub async fn search(
