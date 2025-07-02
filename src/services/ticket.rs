@@ -1,11 +1,9 @@
 // everything tickets: purchase, verification, transfers
-
 // TODO: finalize on AWS or Digital Ocean
-
 use crate::models::{
     event::Event, ticket::Ticket, ticket_type::TicketType, transaction::Transaction, user::User,
 };
-use crate::services::stellar_service::StellarService;
+use crate::services::stellar::StellarService;
 use anyhow::{anyhow, Result};
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::operation::put_object::PutObjectOutput;
@@ -31,14 +29,13 @@ use uuid::Uuid;
 
 pub struct TicketService {
     pool: PgPool,
-    stellar_service: StellarService,
+    stellar: StellarService,
     s3_client: Option<S3Client>,
 }
 
 impl TicketService {
     pub async fn new(pool: PgPool) -> Result<Self> {
-        // Initialize the stellar service
-        let stellar_service = StellarService::new()?;
+        let stellar = StellarService::new()?;
 
         // If we end up using AWS, initialize S3 client with AWS credentials
         let s3_client = match Self::initialize_s3().await {
@@ -51,7 +48,7 @@ impl TicketService {
 
         Ok(Self {
             pool,
-            stellar_service,
+            stellar,
             s3_client,
         })
     }
@@ -117,7 +114,6 @@ impl TicketService {
 
                 match payment_result {
                     Ok(tx_hash) => {
-                        // Update transaction with Stellar hash
                         self.update_transaction_hash_in_transaction(
                             &mut tx,
                             &transaction,
@@ -233,7 +229,7 @@ impl TicketService {
         .fetch_one(&mut **tx)
         .await?;
 
-        // Manually construct ticket from row
+        // Maybe manually construct ticket from row?
         let ticket = Ticket {
             id: row.id,
             ticket_type_id: row.ticket_type_id,
@@ -431,7 +427,7 @@ impl TicketService {
 
         let amount = transaction.amount.to_string();
         let tx_hash = self
-            .stellar_service
+            .stellar
             .send_payment(&user_secret_key, &platform_wallet, &amount)
             .await?;
 
@@ -483,7 +479,7 @@ impl TicketService {
 
             if let Some(public_key) = &owner.stellar_public_key {
                 let is_valid = self
-                    .stellar_service
+                    .stellar
                     .verify_nft_ownership(public_key, nft_id, &issuer_public_key)
                     .await?;
 
@@ -619,13 +615,13 @@ impl TicketService {
             .subject(format!("Your Ticket for {}", event_title))
             .body(email_body)?;
 
-        // in development, log the email
+        // in dev, log the email
         if env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()) != "production" {
             info!("Would send email with ticket: {}", pdf_url);
             return Ok(());
         }
 
-        // in production, send via SMTP
+        // in prod, send via SMTP
         let smtp_server = env::var("SMTP_SERVER")?;
         let smtp_username = env::var("SMTP_USERNAME")?;
         let smtp_password = env::var("SMTP_PASSWORD")?;
@@ -682,7 +678,7 @@ impl TicketService {
             .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
 
         let tx_hash = self
-            .stellar_service
+            .stellar
             .issue_nft_asset(&issuer_secret_key, &asset_code, &user_public_key)
             .await?;
 
@@ -708,7 +704,7 @@ impl TicketService {
     
     let mut tx = self.pool.begin().await?;
     
-    // If it's an NFT ticket, handle on blockchain
+    // If it's an NFT ticket, handle on chain
     if let Some(nft_id) = &ticket.nft_identifier {
         let from_user = User::find_by_id(&self.pool, from_user_id).await?
             .ok_or_else(|| anyhow!("Sender user not found"))?;
@@ -723,7 +719,7 @@ impl TicketService {
             .map_err(|_| anyhow!("NFT issuer not configured"))?;
             
         // Transfer the NFT on the blockchain
-        self.stellar_service.transfer_nft(
+        self.stellar.transfer_nft(
             &from_secret,
             &to_public,
             nft_id,
@@ -815,7 +811,7 @@ impl TicketService {
                     .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
 
                 let refund_hash = self
-                    .stellar_service
+                    .stellar
                     .process_refund(
                         &refund_secret_key,
                         &user_public_key,
