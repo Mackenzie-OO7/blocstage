@@ -3,6 +3,29 @@
 version = 4
 
 [[package]]
+name = "actix"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de7fa236829ba0841304542f7614c42b80fca007455315c45c785ccfa873a85b"
+dependencies = [
+ "actix-rt",
+ "bitflags 2.9.0",
+ "bytes",
+ "crossbeam-channel",
+ "futures-core",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+ "log",
+ "once_cell",
+ "parking_lot",
+ "pin-project-lite",
+ "smallvec",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "actix-codec"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -199,6 +222,24 @@ dependencies = [
  "time",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "actix-web-actors"
+version = "4.3.1+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f98c5300b38fd004fe7d2a964f9a90813fdbe8a81fed500587e78b1b71c6f980"
+dependencies = [
+ "actix",
+ "actix-codec",
+ "actix-http",
+ "actix-web",
+ "bytes",
+ "bytestring",
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -1102,6 +1143,7 @@ dependencies = [
  "actix-governor",
  "actix-rt",
  "actix-web",
+ "actix-web-actors",
  "anyhow",
  "aws-config",
  "aws-sdk-s3",
@@ -1112,22 +1154,30 @@ dependencies = [
  "dotenv",
  "env_logger",
  "futures",
+ "hex",
  "jsonwebtoken",
  "lettre",
  "log",
  "num_cpus",
+ "opentelemetry",
  "pdf-canvas",
  "printpdf",
+ "prometheus",
  "qrcode",
  "rand 0.9.1",
  "reqwest",
+ "ring",
  "rust_decimal",
  "serde",
  "serde_json",
  "sqlx",
+ "stellar-base",
+ "stellar-strkey",
  "stellar_sdk",
  "thiserror 2.0.12",
  "tokio",
+ "tracing",
+ "tracing-opentelemetry",
  "uuid",
 ]
 
@@ -1490,6 +1540,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "crate-git-revision"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c521bf1f43d31ed2f73441775ed31935d77901cb3451e44b38a1c1612fcbaf98"
+dependencies = [
+ "serde",
+ "serde_derive",
+ "serde_json",
+]
+
+[[package]]
 name = "crc"
 version = "3.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1535,6 +1596,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4955638f00a809894c947f85a024020a20815b65a5eea633798ea7924edab2b3"
 dependencies = [
  "crc",
+]
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -3461,6 +3531,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaf416e4cb72756655126f7dd7bb0af49c674f4c1b9903e80c009e0c37e552e6"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "js-sys",
+ "pin-project-lite",
+ "thiserror 2.0.12",
+ "tracing",
+]
+
+[[package]]
+name = "opentelemetry_sdk"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11f644aa9e5e31d11896e024305d7e3c98a88884d9f8919dbf37a9991bc47a4b"
+dependencies = [
+ "futures-channel",
+ "futures-executor",
+ "futures-util",
+ "opentelemetry",
+ "percent-encoding",
+ "rand 0.9.1",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "os_str_bytes"
 version = "6.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3871,6 +3970,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02b3e5e68a3a1a02aad3ec490a98007cbc13c37cbe84a3cd7b8e406d76e7f778"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "prometheus"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ca5326d8d0b950a9acd87e6a3f94745394f62e4dae1b1ee22b2bc0c394af43a"
+dependencies = [
+ "cfg-if",
+ "fnv",
+ "lazy_static",
+ "memchr",
+ "parking_lot",
+ "protobuf",
+ "thiserror 2.0.12",
+]
+
+[[package]]
+name = "protobuf"
+version = "3.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d65a1d4ddae7d8b5de68153b48f6aa3bba8cb002b243dbdbc55a5afbc98f99f4"
+dependencies = [
+ "once_cell",
+ "protobuf-support",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "protobuf-support"
+version = "3.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
+dependencies = [
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4702,6 +4836,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
+]
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5120,6 +5263,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "stellar-strkey"
+version = "0.0.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee1832fb50c651ad10f734aaf5d31ca5acdfb197a6ecda64d93fcdb8885af913"
+dependencies = [
+ "crate-git-revision",
+ "data-encoding",
+]
+
+[[package]]
 name = "stellar_sdk"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5403,6 +5556,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "time"
 version = "0.3.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5650,6 +5812,47 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e672c95779cf947c5311f83787af4fa8fffd12fb27e4993211a84bdfd9610f9c"
 dependencies = [
  "once_cell",
+ "valuable",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-opentelemetry"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddcf5959f39507d0d04d6413119c04f33b623f4f951ebcbdddddfad2d0623a9c"
+dependencies = [
+ "js-sys",
+ "once_cell",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "smallvec",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+ "tracing-subscriber",
+ "web-time",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8189decb5ac0fa7bc8b96b7cb9b2701d60d48805aca84a238004d665fcc4008"
+dependencies = [
+ "sharded-slab",
+ "thread_local",
+ "tracing-core",
 ]
 
 [[package]]
@@ -5867,6 +6070,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "valuable"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
 name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6027,14 +6236,14 @@ version = "0.26.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
 dependencies = [
- "webpki-roots 1.0.0",
+ "webpki-roots 1.0.1",
 ]
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2853738d1cc4f2da3a225c18ec6c3721abb31961096e9dbf5ab35fa88b19cfdb"
+checksum = "8782dd5a41a24eed3a4f40b606249b3e236ca61adf1f25ea4d45c73de122b502"
 dependencies = [
  "rustls-pki-types",
 ]

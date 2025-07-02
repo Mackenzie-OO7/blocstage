@@ -8,6 +8,7 @@ actix-cors = "0.7.1"
 actix-governor = "0.8.0"
 actix-rt = "2.10.0"
 actix-web = "4.10.2"
+actix-web-actors = "4.2"
 anyhow = "1.0.98"
 aws-config = "1.6.2"
 aws-sdk-s3 = "1.85.0"
@@ -18,20 +19,28 @@ chrono = { version = "0.4.41", features = ["serde"] }
 dotenv = "0.15.0"
 env_logger = "0.11.8"
 futures = "0.3.31"
+hex = "0.4.0"
 jsonwebtoken = "9.3.1"
 lettre = "0.11.16"
 log = "0.4.27"
 num_cpus = "1.16.0"
+opentelemetry = "0.30.0"
 pdf-canvas = "0.7.0"
 printpdf = "0.8.2"
+prometheus = "0.14.0"
 qrcode = "0.14.1"
 rand = { version = "0.9.1", features = ["std"] }
 reqwest = { version = "0.12.15", features = ["json"] }
+ring = "0.17.14"
 rust_decimal = "1.37.1"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 sqlx = { version = "0.8.5", features = ["postgres", "chrono", "uuid", "json", "runtime-tokio", "tls-native-tls", "runtime-tokio-native-tls", "bigdecimal"] }
 stellar_sdk = "0.1.4"
+stellar-strkey = "0.0.13"
+stellar-base = "0.5.0"
 thiserror = "2.0.12"
 tokio = { version = "1.45.0", features = ["full"] }
+tracing = "0.1.40"
+tracing-opentelemetry = "0.31.0"
 uuid = { version = "1.16.0", features = ["v4", "serde"] }
