@@ -6,7 +6,6 @@ pub mod middleware;
 use actix_web::{
     web, App, HttpServer, HttpResponse, Responder,
     middleware::{Logger, DefaultHeaders, Compress},
-    http::header::{CONTENT_TYPE, CACHE_CONTROL},
 };
 use actix_cors::Cors;
 use actix_governor::{Governor, GovernorConfigBuilder};
@@ -18,7 +17,6 @@ use serde_json::json;
 
 use crate::controllers::configure_routes;
 
-// Health check endpoint for load balancers and monitoring
 async fn health_check() -> impl Responder {
     HttpResponse::Ok().json(json!({
         "status": "healthy",
@@ -27,13 +25,12 @@ async fn health_check() -> impl Responder {
     }))
 }
 
-// API info endpoint
-// TODO: better description when i'm not so tired
-async fn api_info() -> impl Responder {
+// API info endpoint. TODO: this will be moved to the /api scope
+pub async fn api_info() -> impl Responder {
     HttpResponse::Ok().json(json!({
         "name": "Blocstage Ticketing API",
         "version": env!("CARGO_PKG_VERSION"),
-        "description": "Decentralized ticketing platform with Stellar blockchain integration",
+        "description": "Decentralized ticketing platform on Stellar",
         "endpoints": {
             "health": "/health",
             "api_docs": "/api",
@@ -58,17 +55,14 @@ async fn not_found() -> impl Responder {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Load environment variables from .env file
     dotenv().ok();
     
-    // Initialize structured logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_secs()
         .init();
     
     info!("Starting Blocstage Ticketing Platform API v{}", env!("CARGO_PKG_VERSION"));
     
-    // Get configuration from environment variables
     let database_url = env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set");
     let server_host = env::var("SERVER_HOST")
@@ -78,10 +72,8 @@ async fn main() -> std::io::Result<()> {
         .parse::<u16>()
         .expect("SERVER_PORT must be a valid port number");
     
-    // Validate required environment variables
     validate_environment_variables();
     
-    // Create database connection pool with optimized settings
     info!("Connecting to database...");
     let db_pool = PgPoolOptions::new()
         .max_connections(20) // Max connections for production
@@ -93,7 +85,6 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("Failed to create database pool");
     
-    // Test database connection
     match sqlx::query("SELECT 1").fetch_one(&db_pool).await {
         Ok(_) => info!("Database connection successful"),
         Err(e) => {
@@ -102,7 +93,6 @@ async fn main() -> std::io::Result<()> {
         }
     }
     
-    // Run database migrations
     info!("Running database migrations...");
     match sqlx::migrate!("./migrations").run(&db_pool).await {
         Ok(_) => info!("Database migrations completed successfully"),
@@ -112,10 +102,10 @@ async fn main() -> std::io::Result<()> {
         }
     }
     
-    // Configure rate limiting (100 requests per minute per IP)
+    // rate limiting (100 requests per minute per IP)
     let governor_conf = GovernorConfigBuilder::default()
         .requests_per_minute(100)
-        .burst_size(20) // Allow burst of 20 requests
+        .burst_size(20) // allow burst of 20 requests
         .finish()
         .unwrap();
     
@@ -125,7 +115,6 @@ async fn main() -> std::io::Result<()> {
     
     // Start HTTP server
     HttpServer::new(move || {
-        // Configure CORS - moved inside closure to fix lifetime issues
         let cors_origins = env::var("CORS_ALLOWED_ORIGINS")
             .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173".to_string());
         
@@ -147,10 +136,9 @@ async fn main() -> std::io::Result<()> {
             .supports_credentials();
         
         App::new()
-            // Add database pool to app data
             .app_data(web::Data::new(db_pool.clone()))
             
-            // Configure JSON payload limits (10MB max)
+            // JSON payload limits (10MB max)
             .app_data(web::JsonConfig::default()
                 .limit(10 * 1024 * 1024) // 10MB
                 .error_handler(|err, _req| {
@@ -165,7 +153,7 @@ async fn main() -> std::io::Result<()> {
                 })
             )
             
-            // Configure form data limits
+            // form data limits
             .app_data(web::FormConfig::default()
                 .limit(5 * 1024 * 1024) // 5MB
                 .error_handler(|err, _req| {
@@ -182,11 +170,11 @@ async fn main() -> std::io::Result<()> {
             
             // Security and performance middleware
             .wrap(cors)
-            .wrap(Governor::new(&governor_conf)) // Rate limiting
+            .wrap(Governor::new(&governor_conf)) // Rate limit
             .wrap(Compress::default()) // Response compression
             .wrap(Logger::new(
                 r#"%a "%r" %s %b "%{Referer}i" "%{User-Agent}i" %T"#
-            )) // Request logging
+            ))
             
             // Security headers
             .wrap(DefaultHeaders::new()
@@ -200,29 +188,28 @@ async fn main() -> std::io::Result<()> {
                 .add(("Permissions-Policy", "geolocation=(), microphone=(), camera=()"))
             )
             
-            // API routes
-            .configure(configure_routes)
-            
             // System endpoints
             .route("/health", web::get().to(health_check))
-            .route("/api", web::get().to(api_info))
+            
+            // API routes (includes /api root now)
+            .configure(configure_routes)
             
             // 404 handler for all other routes
             .default_service(web::route().to(not_found))
     })
     .bind(format!("{}:{}", server_host, server_port))?
-    .workers(num_cpus::get()) // Use all available CPU cores
-    .shutdown_timeout(30) // 30 second graceful shutdown
+    .workers(num_cpus::get())
+    .shutdown_timeout(30) // 30 second shutdown
     .run()
     .await
 }
 
-// Validate that all required environment variables are set
 fn validate_environment_variables() {
     let required_vars = [
         "DATABASE_URL",
         "JWT_SECRET",
         "STELLAR_NETWORK",
+        "MASTER_ENCRYPTION_KEY",
     ];
     
     let optional_vars = [
@@ -243,7 +230,6 @@ fn validate_environment_variables() {
         "LOCAL_STORAGE_DIR",
     ];
     
-    // Check required variables
     let mut missing_required = Vec::new();
     for var in required_vars.iter() {
         if env::var(var).is_err() {
@@ -257,7 +243,6 @@ fn validate_environment_variables() {
         std::process::exit(1);
     }
     
-    // Warn about missing optional variables
     let mut missing_optional = Vec::new();
     for var in optional_vars.iter() {
         if env::var(var).is_err() {
@@ -270,10 +255,16 @@ fn validate_environment_variables() {
         warn!("Some features may not work without these variables");
     }
     
-    // Validate JWT secret strength
     if let Ok(jwt_secret) = env::var("JWT_SECRET") {
         if jwt_secret.len() < 32 {
             error!("JWT_SECRET must be at least 32 characters long for security");
+            std::process::exit(1);
+        }
+    }
+    
+    if let Ok(master_key) = env::var("MASTER_ENCRYPTION_KEY") {
+        if master_key.len() != 64 {
+            error!("MASTER_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)");
             std::process::exit(1);
         }
     }
