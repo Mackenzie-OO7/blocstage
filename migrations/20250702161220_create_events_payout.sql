@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS event_payouts (
+    id UUID PRIMARY KEY,
+    event_id UUID NOT NULL REFERENCES events(id),
+    transaction_hash VARCHAR(255) NOT NULL,
+    amount DECIMAL(19, 8) NOT NULL,
+    paid_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
