@@ -1,18 +1,19 @@
-pub mod auth_controller;
-pub mod event_controller;
-pub mod ticket_controller;
-pub mod transaction_controller;
-pub mod user_controller;
+pub mod auth;
+pub mod event;
+pub mod ticket;
+pub mod transaction;
+pub mod user;
 
 use actix_web::web;
 
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/api")
-            .configure(auth_controller::configure)
-            .configure(event_controller::configure)
-            .configure(ticket_controller::configure)
-            .configure(transaction_controller::configure)
-            .configure(user_controller::configure)
+            .route("", web::get().to(crate::api_info))
+            .configure(auth::configure)
+            .configure(ticket::configure)  // ← MOVED BEFORE event_controller
+            .configure(event::configure)   // ← This now comes after ticket_controller
+            .configure(transaction::configure)
+            .configure(user::configure)
     );
 }

@@ -2,7 +2,7 @@ use actix_web::{web, HttpResponse, Responder};
 use crate::models::event::Event;
 use crate::models::ticket::CheckInRequest;
 use crate::models::ticket_type::{CreateTicketTypeRequest, TicketType};
-use crate::services::ticket_service::TicketService;
+use crate::services::ticket::TicketService;
 use crate::middleware::auth::AuthenticatedUser;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -20,17 +20,16 @@ struct TransferTicketRequest {
     recipient_id: Uuid,
 }
 
-async fn create_ticket_service(pool: &PgPool) -> Result<TicketService> {
+async fn create_ticket(pool: &PgPool) -> Result<TicketService> {
     TicketService::new(pool.clone()).await
 }
 
-// ============ TICKET TYPE MANAGEMENT ============
-
+// TICKET TYPE MANAGEMENT
 pub async fn create_ticket_type(
     pool: web::Data<PgPool>,
     event_id: web::Path<Uuid>,
     ticket_data: web::Json<CreateTicketTypeRequest>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     let _event = match crate::middleware::auth::check_event_ownership(&pool, user.id, *event_id).await {
         Ok(event) => event,
@@ -69,7 +68,7 @@ pub async fn get_ticket_types(
 pub async fn update_ticket_type_status(
     pool: web::Data<PgPool>,
     path: web::Path<(Uuid, bool)>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     let (ticket_type_id, is_active) = path.into_inner();
     
@@ -107,22 +106,21 @@ pub async fn update_ticket_type_status(
     }
 }
 
-// ============ TICKET PURCHASING ============
+// TICKET PURCHASING
 
 pub async fn purchase_ticket(
     pool: web::Data<PgPool>,
     ticket_type_id: web::Path<Uuid>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
-    // to prevent fraud
     let _verified_user = match crate::middleware::auth::require_verified_user(&pool, user.id).await {
         Ok(user) => user,
         Err(response) => return response,
     };
     
-    match create_ticket_service(&pool).await {
-        Ok(ticket_service) => {
-            match ticket_service.purchase_ticket(*ticket_type_id, user.id).await {
+    match create_ticket(&pool).await {
+        Ok(ticket) => {
+            match ticket.purchase_ticket(*ticket_type_id, user.id).await {
                 Ok(ticket) => {
                     info!("Ticket purchased: {} by verified user {}", ticket.id, user.id);
                     HttpResponse::Created().json(ticket)
@@ -153,15 +151,15 @@ pub async fn purchase_ticket(
     }
 }
 
-// ============ TICKET VERIFICATION ============
+// TICKET VERIFICATION
 
 pub async fn verify_ticket(
     pool: web::Data<PgPool>,
     ticket_id: web::Path<Uuid>,
 ) -> impl Responder {
-    match create_ticket_service(&pool).await {
-        Ok(ticket_service) => {
-            match ticket_service.verify_ticket(*ticket_id).await {
+    match create_ticket(&pool).await {
+        Ok(ticket) => {
+            match ticket.verify_ticket(*ticket_id).await {
                 Ok(is_valid) => HttpResponse::Ok().json(serde_json::json!({ 
                     "is_valid": is_valid,
                     "message": if is_valid { "Ticket is valid" } else { "Ticket is not valid" }
@@ -193,16 +191,16 @@ pub async fn verify_ticket(
 pub async fn check_in_ticket(
     pool: web::Data<PgPool>,
     data: web::Json<CheckInRequest>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     // the check-in user has to be verified or say a staff member
     let _verified_user = match crate::middleware::auth::require_verified_user(&pool, user.id).await {
         Ok(user) => user,
         Err(response) => return response,
     };
-        match create_ticket_service(&pool).await {
-        Ok(ticket_service) => {
-            match ticket_service.check_in_ticket(data.ticket_id, user.id).await {
+        match create_ticket(&pool).await {
+        Ok(ticket) => {
+            match ticket.check_in_ticket(data.ticket_id, user.id).await {
                 Ok(ticket) => {
                     info!("Ticket checked in: {} by verified staff {}", ticket.id, user.id);
                     HttpResponse::Ok().json(serde_json::json!({
@@ -236,12 +234,12 @@ pub async fn check_in_ticket(
     }
 }
 
-// ============ TICKET MANAGEMENT ============
+// TICKET MANAGEMENT
 
 pub async fn generate_pdf_ticket(
     pool: web::Data<PgPool>,
     ticket_id: web::Path<Uuid>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     match crate::models::ticket::Ticket::find_by_id(&pool, *ticket_id).await {
         Ok(Some(ticket)) => {
@@ -252,9 +250,9 @@ pub async fn generate_pdf_ticket(
             }
             
             // PDF generation
-            match create_ticket_service(&pool).await {
-                Ok(ticket_service) => {
-                    match ticket_service.generate_pdf_ticket(*ticket_id).await {
+            match create_ticket(&pool).await {
+                Ok(ticket) => {
+                    match ticket.generate_pdf_ticket(*ticket_id).await {
                         Ok(pdf_url) => {
                             info!("PDF ticket generated: {} for user {}", ticket_id, user.id);
                             HttpResponse::Ok().json(serde_json::json!({
@@ -293,7 +291,7 @@ pub async fn generate_pdf_ticket(
 pub async fn convert_to_nft(
     pool: web::Data<PgPool>,
     ticket_id: web::Path<Uuid>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     match crate::models::ticket::Ticket::find_by_id(&pool, *ticket_id).await {
         Ok(Some(ticket)) => {
@@ -304,9 +302,9 @@ pub async fn convert_to_nft(
             }
             
             // NFT conversion
-            match create_ticket_service(&pool).await {
-                Ok(ticket_service) => {
-                    match ticket_service.convert_to_nft(*ticket_id).await {
+            match create_ticket(&pool).await {
+                Ok(ticket) => {
+                    match ticket.convert_to_nft(*ticket_id).await {
                         Ok(ticket) => {
                             info!("Ticket converted to NFT: {} for user {}", ticket_id, user.id);
                             HttpResponse::Ok().json(serde_json::json!({
@@ -355,12 +353,12 @@ pub async fn transfer_ticket(
     pool: web::Data<PgPool>,
     ticket_id: web::Path<Uuid>,
     data: web::Json<TransferTicketRequest>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     // ownership is checked in the service
-    match create_ticket_service(&pool).await {
-        Ok(ticket_service) => {
-            match ticket_service.transfer_ticket(*ticket_id, user.id, data.recipient_id).await {
+    match create_ticket(&pool).await {
+        Ok(ticket) => {
+            match ticket.transfer_ticket(*ticket_id, user.id, data.recipient_id).await {
                 Ok(ticket) => {
                     info!("Ticket transferred: {} from user {} to user {}", 
                           ticket_id, user.id, data.recipient_id);
@@ -400,11 +398,11 @@ pub async fn transfer_ticket(
 pub async fn cancel_ticket(
     pool: web::Data<PgPool>,
     ticket_id: web::Path<Uuid>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
-    match create_ticket_service(&pool).await {
-        Ok(ticket_service) => {
-            match ticket_service.cancel_ticket(*ticket_id, user.id).await {
+    match create_ticket(&pool).await {
+        Ok(ticket) => {
+            match ticket.cancel_ticket(*ticket_id, user.id).await {
                 Ok(_) => {
                     info!("Ticket cancelled: {} by user {}", ticket_id, user.id);
                     HttpResponse::Ok().json(serde_json::json!({
@@ -439,11 +437,11 @@ pub async fn cancel_ticket(
 
 pub async fn get_user_tickets(
     pool: web::Data<PgPool>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
-    match create_ticket_service(&pool).await {
-        Ok(ticket_service) => {
-            match ticket_service.get_user_tickets(user.id).await {
+    match create_ticket(&pool).await {
+        Ok(ticket) => {
+            match ticket.get_user_tickets(user.id).await {
                 Ok(tickets) => HttpResponse::Ok().json(tickets),
                 Err(e) => {
                     error!("Failed to fetch user tickets: {}", e);
@@ -462,11 +460,11 @@ pub async fn get_user_tickets(
     }
 }
 
-// ============ ADMIN ENDPOINTS ============
+// ADMIN ENDPOINTS
 
 pub async fn admin_get_all_tickets(
     pool: web::Data<PgPool>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
         Ok(user) => user,
@@ -495,7 +493,7 @@ pub async fn admin_get_all_tickets(
 pub async fn admin_cancel_any_ticket(
     pool: web::Data<PgPool>,
     ticket_id: web::Path<Uuid>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
         Ok(user) => user,
@@ -517,9 +515,9 @@ pub async fn admin_cancel_any_ticket(
         }
     };
     
-    match create_ticket_service(&pool).await {
-        Ok(ticket_service) => {
-            match ticket_service.cancel_ticket(*ticket_id, ticket.owner_id).await {
+    match create_ticket(&pool).await {
+        Ok(ticket) => {
+            match ticket.cancel_ticket(*ticket_id, ticket.owner_id).await {
                 Ok(_) => {
                     warn!("Admin {} cancelled ticket {} owned by user {}", user.id, ticket_id, ticket.owner_id);
                     HttpResponse::Ok().json(serde_json::json!({
@@ -547,19 +545,19 @@ pub async fn admin_cancel_any_ticket(
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
+        web::scope("/events/{event_id}/tickets")
+            // Ticket types for events
+            .route("", web::get().to(get_ticket_types))
+            .route("", web::post().to(create_ticket_type))
+    )
+    .service(
         web::scope("/tickets")
-            // User ticket operations
+            // User ticket ops
             .route("/my-tickets", web::get().to(get_user_tickets))
             .route("/{ticket_id}/generate-pdf", web::post().to(generate_pdf_ticket))
             .route("/{ticket_id}/convert-to-nft", web::post().to(convert_to_nft))
             .route("/{ticket_id}/transfer", web::post().to(transfer_ticket))
             .route("/{ticket_id}/cancel", web::post().to(cancel_ticket))
-    )
-    .service(
-        web::scope("/events/{event_id}/tickets")
-            // Ticket types for events
-            .route("", web::get().to(get_ticket_types))
-            .route("", web::post().to(create_ticket_type))
     )
     .service(
         web::scope("/ticket-types")
@@ -573,7 +571,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
     )
     .service(
         web::scope("/admin/tickets")
-            // Admin-only ticket operations
+            // Admin-only ticket ops
             .route("", web::get().to(admin_get_all_tickets))
             .route("/{ticket_id}/cancel", web::post().to(admin_cancel_any_ticket))
     );

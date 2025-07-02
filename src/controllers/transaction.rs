@@ -14,7 +14,7 @@ struct ErrorResponse {
 pub async fn get_transaction_by_id(
     pool: web::Data<PgPool>,
     transaction_id: web::Path<Uuid>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     match Transaction::find_by_id(&pool, *transaction_id).await {
         Ok(Some(transaction)) => {
@@ -40,7 +40,7 @@ pub async fn get_transaction_by_id(
 
 pub async fn get_user_transactions(
     pool: web::Data<PgPool>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     match Transaction::find_by_user(&pool, user.id).await {
         Ok(transactions) => HttpResponse::Ok().json(transactions),
@@ -56,7 +56,7 @@ pub async fn get_user_transactions(
 pub async fn generate_receipt(
     pool: web::Data<PgPool>,
     transaction_id: web::Path<Uuid>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     match Transaction::find_by_id(&pool, *transaction_id).await {
         Ok(Some(transaction)) => {
@@ -97,7 +97,7 @@ pub async fn generate_receipt(
 pub async fn request_refund(
     pool: web::Data<PgPool>,
     refund_data: web::Json<RefundRequest>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     match crate::models::ticket::Ticket::find_by_id(&pool, refund_data.ticket_id).await {
         Ok(Some(ticket)) => {

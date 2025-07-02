@@ -1,10 +1,11 @@
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::user::User;
-use crate::services::stellar_service::StellarService;
+use crate::services::stellar::StellarService;
 use actix_web::{web, HttpResponse, Responder};
 use anyhow::Result;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
+use serde_json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -32,7 +33,7 @@ struct GenerateWalletRequest {
 
 pub async fn get_profile(
     pool: web::Data<PgPool>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     match User::find_by_id(&pool, user.id).await {
         Ok(Some(user_profile)) => HttpResponse::Ok().json(user_profile),
@@ -55,7 +56,7 @@ pub async fn get_profile(
 pub async fn update_profile(
     pool: web::Data<PgPool>,
     profile_data: web::Json<UpdateProfileRequest>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     match User::find_by_id(&pool, user.id).await {
         Ok(Some(user_profile)) => {
@@ -131,7 +132,7 @@ pub async fn update_profile(
 pub async fn update_password(
     pool: web::Data<PgPool>,
     password_data: web::Json<UpdatePasswordRequest>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     match User::find_by_id(&pool, user.id).await {
         Ok(Some(user_profile)) => {
@@ -211,11 +212,11 @@ pub async fn update_password(
 
 pub async fn get_wallet_info(
     pool: web::Data<PgPool>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     match User::find_by_id(&pool, user.id).await {
         Ok(Some(user_profile)) => {
-            let stellar_service = match StellarService::new() {
+            let stellar = match StellarService::new() {
                 Ok(service) => service,
                 Err(e) => {
                     error!("Failed to initialize Stellar service: {}", e);
@@ -237,7 +238,7 @@ pub async fn get_wallet_info(
 
             let balance_future = async {
                 if let Some(key) = &user_profile.stellar_public_key {
-                    match stellar_service.get_xlm_balance(key).await {
+                    match stellar.get_xlm_balance(key).await {
                         Ok(balance) => Some(balance),
                         Err(e) => {
                             error!("Failed to fetch balance from Stellar: {}", e);
@@ -280,7 +281,7 @@ pub async fn get_wallet_info(
 pub async fn generate_wallet(
     pool: web::Data<PgPool>,
     _request: web::Json<GenerateWalletRequest>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     match User::find_by_id(&pool, user.id).await {
         Ok(Some(user_profile)) => {
@@ -290,7 +291,7 @@ pub async fn generate_wallet(
                 });
             }
 
-            let stellar_service = match StellarService::new() {
+            let stellar = match StellarService::new() {
                 Ok(service) => service,
                 Err(e) => {
                     error!("Failed to initialize Stellar service: {}", e);
@@ -301,7 +302,7 @@ pub async fn generate_wallet(
                 }
             };
 
-            match stellar_service.generate_keypair() {
+            match stellar.generate_keypair() {
                 Ok((public_key, secret_key)) => {
                     match user_profile
                         .update_stellar_keys(&pool, &public_key, &secret_key)
@@ -349,7 +350,7 @@ pub async fn generate_wallet(
 pub async fn get_user_by_id(
     pool: web::Data<PgPool>,
     user_id: web::Path<Uuid>,
-    current_user: web::ReqData<AuthenticatedUser>,
+    current_user: AuthenticatedUser,
 ) -> impl Responder {
     let is_self = current_user.id == *user_id;
 
@@ -378,14 +379,27 @@ pub async fn get_user_by_id(
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/users")
-            // Current user profile
             .route("/me", web::get().to(get_profile))
             .route("/me", web::put().to(update_profile))
             .route("/me/password", web::put().to(update_password))
-            // Wallet operations
             .route("/me/wallet", web::get().to(get_wallet_info))
             .route("/me/wallet", web::post().to(generate_wallet))
-            // User lookup (admin or self)
+            .route("/test-auth", web::get().to(test_auth))
+            .route("/simple-test", web::get().to(simple_test))
             .route("/{user_id}", web::get().to(get_user_by_id)),
     );
+}
+
+// test & debug
+pub async fn test_auth(user: AuthenticatedUser) -> impl Responder {
+    HttpResponse::Ok().json(serde_json::json!({
+        "message": "Authentication working!",
+        "user_id": user.id.to_string()
+    }))
+}
+
+pub async fn simple_test() -> impl Responder {
+    HttpResponse::Ok().json(serde_json::json!({
+        "message": "Server is working!"
+    }))
 }

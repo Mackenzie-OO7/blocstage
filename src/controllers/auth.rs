@@ -1,7 +1,7 @@
 use actix_web::{web, HttpResponse, Responder, ResponseError};
 use sqlx::PgPool;
 use crate::models::user::{CreateUserRequest, LoginRequest, VerifyEmailRequest, RequestPasswordResetRequest, ResetPasswordRequest};
-use crate::services::auth_service::AuthService;
+use crate::services::auth::AuthService;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -23,7 +23,7 @@ pub async fn register(
     pool: web::Data<sqlx::PgPool>,
     user_data: web::Json<CreateUserRequest>,
 ) -> impl Responder {
-    let auth_service = match AuthService::new(pool.get_ref().clone()) {
+    let auth = match AuthService::new(pool.get_ref().clone()) {
         Ok(service) => service,
         Err(e) => {
             error!("Failed to initialize auth service: {}", e);
@@ -33,7 +33,7 @@ pub async fn register(
         }
     };
     
-    match auth_service.register(user_data.into_inner()).await {
+    match auth.register(user_data.into_inner()).await {
         Ok(user) => {
             info!("User registered successfully: {}", user.id);
             HttpResponse::Created().json(user)
@@ -59,7 +59,7 @@ pub async fn login(
     pool: web::Data<sqlx::PgPool>,
     login_data: web::Json<LoginRequest>,
 ) -> impl Responder {
-    let auth_service = match AuthService::new(pool.get_ref().clone()) {
+    let auth = match AuthService::new(pool.get_ref().clone()) {
         Ok(service) => service,
         Err(e) => {
             error!("Failed to initialize auth service: {}", e);
@@ -69,7 +69,7 @@ pub async fn login(
         }
     };
     
-    match auth_service.login(login_data.into_inner()).await {
+    match auth.login(login_data.into_inner()).await {
         Ok(token) => {
             HttpResponse::Ok().json(serde_json::json!({
                 "token": token,
@@ -99,7 +99,7 @@ pub async fn verify_email(
     pool: web::Data<sqlx::PgPool>,
     data: web::Query<VerifyEmailRequest>,
 ) -> impl Responder {
-    let auth_service = match AuthService::new(pool.get_ref().clone()) {
+    let auth = match AuthService::new(pool.get_ref().clone()) {
         Ok(service) => service,
         Err(e) => {
             error!("Failed to initialize auth service: {}", e);
@@ -109,7 +109,7 @@ pub async fn verify_email(
         }
     };
     
-    match auth_service.verify_email(&data.token).await {
+    match auth.verify_email(&data.token).await {
         Ok(_) => {
             HttpResponse::Ok().json(serde_json::json!({
                 "message": "Email verified successfully. You can now log in."
@@ -128,7 +128,7 @@ pub async fn request_password_reset(
     pool: web::Data<sqlx::PgPool>,
     data: web::Json<RequestPasswordResetRequest>,
 ) -> impl Responder {
-    let auth_service = match AuthService::new(pool.get_ref().clone()) {
+    let auth = match AuthService::new(pool.get_ref().clone()) {
         Ok(service) => service,
         Err(e) => {
             error!("Failed to initialize auth service: {}", e);
@@ -139,7 +139,7 @@ pub async fn request_password_reset(
     };
     
     // for now, always return success to not leak user existence
-    match auth_service.request_password_reset(&data.email).await {
+    match auth.request_password_reset(&data.email).await {
         Ok(_) => {},
         Err(e) => error!("Password reset request failed: {}", e),
     }
@@ -153,7 +153,7 @@ pub async fn reset_password(
     pool: web::Data<sqlx::PgPool>,
     data: web::Json<ResetPasswordRequest>,
 ) -> impl Responder {
-    let auth_service = match AuthService::new(pool.get_ref().clone()) {
+    let auth = match AuthService::new(pool.get_ref().clone()) {
         Ok(service) => service,
         Err(e) => {
             error!("Failed to initialize auth service: {}", e);
@@ -163,7 +163,7 @@ pub async fn reset_password(
         }
     };
     
-    match auth_service.reset_password(&data.token, &data.new_password).await {
+    match auth.reset_password(&data.token, &data.new_password).await {
         Ok(_) => {
             HttpResponse::Ok().json(serde_json::json!({
                 "message": "Password has been reset successfully. You can now log in with your new password."
@@ -187,9 +187,9 @@ pub async fn reset_password(
 
 pub async fn delete_account(
     pool: web::Data<sqlx::PgPool>,
-    auth_user: web::ReqData<AuthenticatedUser>,
+    auth_user: AuthenticatedUser,
 ) -> impl Responder {
-    let auth_service = match AuthService::new(pool.get_ref().clone()) {
+    let auth = match AuthService::new(pool.get_ref().clone()) {
         Ok(service) => service,
         Err(e) => {
             error!("Failed to initialize auth service: {}", e);
@@ -199,7 +199,7 @@ pub async fn delete_account(
         }
     };
     
-    match auth_service.delete_account(auth_user.id).await {
+    match auth.delete_account(auth_user.id).await {
         Ok(_) => {
             HttpResponse::Ok().json(serde_json::json!({
                 "message": "Your account has been successfully deleted."
@@ -228,13 +228,13 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
 
 pub async fn admin_dashboard(
     pool: web::Data<PgPool>,
-    user: web::ReqData<AuthenticatedUser>,
+    user: AuthenticatedUser,
 ) -> impl Responder {
     let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
         Ok(user) => user,
         Err(response) => return response,
     };
     
-    // Admin logic here...
+    // TODO: leter on, put admin logic here...
     HttpResponse::Ok().json("Admin dashboard data")
 }
