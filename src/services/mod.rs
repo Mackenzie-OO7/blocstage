@@ -1,7 +1,11 @@
-pub mod stellar_service;
-pub mod auth_service;
-pub mod ticket_service;
+pub mod stellar;
+pub mod auth;
+pub mod ticket;
+pub mod crypto;
+pub mod event;
 
-pub use stellar_service::StellarService;
-pub use auth_service::AuthService;
-pub use ticket_service::TicketService;
+pub use stellar::StellarService;
+pub use auth::AuthService;
+pub use ticket::TicketService;
+pub use crypto::KeyEncryption;
+pub use event::EventService;
