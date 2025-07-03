@@ -9,9 +9,8 @@ use blocstage::models::user::LoginRequest;
 use blocstage::services::{AuthService, StellarService};
 use blocstage::services::crypto::KeyEncryption;
 
-// Helper to setup test database
+// Helper to setup test database (shared across all tests)
 async fn setup_test_db() -> PgPool {
-    // Load test environment variables
     dotenv::from_filename(".env.test").ok();
     dotenv::dotenv().ok(); // Fallback to .env
     
@@ -31,37 +30,31 @@ async fn setup_test_db() -> PgPool {
     pool
 }
 
-// Helper to clear test data
-async fn cleanup_test_db(pool: &PgPool) {
-    // Use runtime query instead of compile-time macro
-    sqlx::query("TRUNCATE TABLE transactions, tickets, ticket_types, events, users CASCADE")
-        .execute(pool)
-        .await
-        .expect("Failed to cleanup test database");
-    
-    // Add a small delay to ensure cleanup is complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+fn get_unique_test_identifier() -> String {
+    let uuid_str = format!("{}", Uuid::new_v4().simple());
+    format!("{}_{}", 
+           std::process::id(), // Process ID helps with parallel test runs
+           &uuid_str[..8])
 }
 
-// Helper to create test user
+// Helper to create test user with guaranteed unique data
 async fn create_test_user(pool: &PgPool) -> (Uuid, String) {
     let user_id = Uuid::new_v4();
-    let email = format!("test{}@example.com", user_id.simple());
+    let unique_id = get_unique_test_identifier();
+    let email = format!("test{}@example.com", unique_id);
+    let username = format!("user{}", unique_id);
     
-    // Go back to cost factor 4 for debugging
+    // Use cost factor 4 for faster testing
     let password_hash = bcrypt::hash("password123", 4).unwrap();
-    println!("🔐 Created test user with hash: {}", password_hash);
+    println!("🔐 Created test user: {} with ID: {}", email, user_id);
     
-    sqlx::query(
+    sqlx::query!(
         r#"
         INSERT INTO users (id, username, email, password_hash, email_verified, role, status, created_at, updated_at)
         VALUES ($1, $2, $3, $4, true, 'user', 'active', NOW(), NOW())
-        "#
+        "#,
+        user_id, username, email, password_hash
     )
-    .bind(user_id)
-    .bind(format!("user{}", user_id.simple()))
-    .bind(&email)
-    .bind(password_hash)
     .execute(pool)
     .await
     .expect("Failed to create test user");
@@ -69,15 +62,14 @@ async fn create_test_user(pool: &PgPool) -> (Uuid, String) {
     (user_id, email)
 }
 
-// Helper to generate auth token
+// Helper to generate auth token with better error handling
 async fn get_auth_token(pool: &PgPool, email: &str) -> String {
     println!("🔑 Getting auth token for: {}", email);
     
-    // Ensure environment is loaded
     dotenv::from_filename(".env.test").ok();
     dotenv::dotenv().ok();
     
-    // First verify the user exists in the database
+    // Verify the user exists in the database
     let user_check = sqlx::query("SELECT id, email, password_hash, email_verified, status, role FROM users WHERE email = $1")
         .bind(email)
         .fetch_optional(pool)
@@ -87,58 +79,39 @@ async fn get_auth_token(pool: &PgPool, email: &str) -> String {
     match user_check {
         Some(row) => {
             let user_id: Uuid = row.get("id");
-            let stored_email: String = row.get("email");
             let password_hash: String = row.get("password_hash");
             let email_verified: bool = row.get("email_verified");
             let status: String = row.get("status");
             let role: String = row.get("role");
             
-            println!("🔍 Found user in DB:");
-            println!("   - ID: {}", user_id);
-            println!("   - Email: {}", stored_email);
-            println!("   - Email verified: {}", email_verified);
-            println!("   - Status: {}", status);
-            println!("   - Role: {}", role);
-            println!("   - Password hash: {}", password_hash);
+            println!("✅ Found user: ID={}, verified={}, status={}, role={}", 
+                    user_id, email_verified, status, role);
             
-            // Test password verification directly RIGHT HERE
-            println!("🔐 Testing bcrypt verification directly in test:");
+            // Test password verification directly
             let password_verify_result = bcrypt::verify("password123", &password_hash);
-            println!("   - Direct bcrypt::verify result: {:?}", password_verify_result);
-            
-            // Also test if the hash format is correct
-            if password_hash.starts_with("$2b$") {
-                println!("   - Hash format looks correct (starts with $2b$)");
-            } else {
-                println!("   - ⚠️  Hash format looks wrong: {}", &password_hash[..20]);
+            if !password_verify_result.unwrap_or(false) {
+                panic!("Password verification failed in test setup");
             }
         },
         None => {
-            println!("❌ User not found in database!");
             panic!("User {} not found in database", email);
         }
-    }
+    };
     
-    println!("🔧 Creating AuthService...");
-    let auth_service = AuthService::new(pool.clone()).unwrap();
+    let auth_service = AuthService::new(pool.clone())
+        .expect("Failed to create AuthService");
     
     let login_req = LoginRequest {
         email: email.to_string(),
         password: "password123".to_string(),
     };
     
-    println!("🔑 Attempting login through AuthService...");
     match auth_service.login(login_req).await {
         Ok(token) => {
             println!("✅ Token generated successfully");
             token
         },
         Err(e) => {
-            println!("❌ AuthService login failed: {}", e);
-            
-            // Let's also check what the AuthService is actually doing
-            println!("🔍 Let's debug what AuthService.login() is doing...");
-            
             panic!("Failed to login test user: {}", e);
         }
     }
@@ -147,7 +120,6 @@ async fn get_auth_token(pool: &PgPool, email: &str) -> String {
 #[actix_web::test]
 async fn test_user_registration_and_login() {
     let pool = setup_test_db().await;
-    cleanup_test_db(&pool).await;
     
     let app = test::init_service(
         App::new()
@@ -155,10 +127,14 @@ async fn test_user_registration_and_login() {
             .configure(blocstage::controllers::configure_routes)
     ).await;
     
+    let unique_id = get_unique_test_identifier();
+    let test_email = format!("reg{}@example.com", unique_id);
+    let test_username = format!("reguser{}", unique_id);
+    
     // Test registration
     let reg_payload = json!({
-        "username": "testuser",
-        "email": "test@example.com",
+        "username": test_username,
+        "email": test_email,
         "password": "password123"
     });
     
@@ -178,29 +154,25 @@ async fn test_user_registration_and_login() {
     
     // Verify user in database
     let user = sqlx::query("SELECT * FROM users WHERE email = $1")
-        .bind("test@example.com")
+        .bind(&test_email)
         .fetch_one(&pool)
         .await
         .expect("User should exist");
     
-    // Get username from the row
     let username: String = user.get("username");
     let email_verified: bool = user.get("email_verified");
     
-    assert_eq!(username, "testuser");
+    assert_eq!(username, test_username);
     assert!(!email_verified); // Should be false initially
     
     println!("✅ User registration test passed");
-    cleanup_test_db(&pool).await;
 }
 
 #[actix_web::test]
 async fn test_event_creation_and_management() {
     let pool = setup_test_db().await;
-    cleanup_test_db(&pool).await;
     
     let (user_id, email) = create_test_user(&pool).await;
-    let token = get_auth_token(&pool, &email).await;
     
     // Verify user first
     sqlx::query!("UPDATE users SET email_verified = true WHERE id = $1", user_id)
@@ -208,15 +180,20 @@ async fn test_event_creation_and_management() {
         .await
         .expect("Failed to verify user");
     
+    let token = get_auth_token(&pool, &email).await;
+    
     let app = test::init_service(
         App::new()
             .app_data(web::Data::new(pool.clone()))
             .configure(blocstage::controllers::configure_routes)
     ).await;
     
-    // Test event creation
+    // Test event creation with unique title to avoid conflicts
+    let unique_id = get_unique_test_identifier();
+    let event_title = format!("Test Concert {}", unique_id);
+    
     let event_payload = json!({
-        "title": "Test Concert",
+        "title": event_title,
         "description": "A test event",
         "location": "Test Venue",
         "start_time": "2025-12-01T19:00:00Z",
@@ -240,7 +217,6 @@ async fn test_event_creation_and_management() {
         
         let event_id = event["id"].as_str().unwrap();
         
-        // Test getting the event
         let req = test::TestRequest::get()
             .uri(&format!("/api/events/{}", event_id))
             .to_request();
@@ -251,16 +227,13 @@ async fn test_event_creation_and_management() {
     } else {
         let body = test::read_body(resp).await;
         println!("❌ Event creation failed: {}", String::from_utf8_lossy(&body));
-        // Continue with test instead of panicking to see other results
+        panic!("Event creation should succeed");
     }
-    
-    cleanup_test_db(&pool).await;
 }
 
 #[actix_web::test]
 async fn test_ticket_type_creation_and_purchase() {
     let pool = setup_test_db().await;
-    cleanup_test_db(&pool).await;
     
     let (user_id, email) = create_test_user(&pool).await;
     
@@ -271,17 +244,21 @@ async fn test_ticket_type_creation_and_purchase() {
         .await
         .expect("Failed to verify user");
     
-    // Create event first
+    // Create event  with unique data
     let event_id = Uuid::new_v4();
+    let unique_id = get_unique_test_identifier();
+    let event_title = format!("Ticket Test Event {}", unique_id);
+    
     sqlx::query(
         r#"
         INSERT INTO events (id, organizer_id, title, description, location, start_time, end_time, created_at, updated_at)
-        VALUES ($1, $2, 'Test Event', 'Test Description', 'Test Location', 
+        VALUES ($1, $2, $3, 'Test Description', 'Test Location', 
                 NOW() + INTERVAL '1 day', NOW() + INTERVAL '1 day' + INTERVAL '3 hours', NOW(), NOW())
         "#
     )
     .bind(event_id)
     .bind(user_id)
+    .bind(event_title)
     .execute(&pool)
     .await
     .expect("Failed to create test event");
@@ -296,9 +273,9 @@ async fn test_ticket_type_creation_and_purchase() {
             .configure(blocstage::controllers::configure_routes)
     ).await;
     
-    // Test ticket type creation
+    let ticket_name = format!("General Admission {}", unique_id);
     let ticket_type_payload = json!({
-        "name": "General Admission",
+        "name": ticket_name,
         "description": "Standard ticket",
         "price": null, // Free ticket
         "total_supply": 100
@@ -339,14 +316,11 @@ async fn test_ticket_type_creation_and_purchase() {
         let body = test::read_body(resp).await;
         println!("❌ Ticket type creation failed: {}", String::from_utf8_lossy(&body));
     }
-    
-    cleanup_test_db(&pool).await;
 }
 
 #[actix_web::test]
 async fn test_ticket_operations() {
     let pool = setup_test_db().await;
-    cleanup_test_db(&pool).await;
     
     let (user_id, email) = create_test_user(&pool).await;
     let (user2_id, _) = create_test_user(&pool).await;
@@ -358,26 +332,29 @@ async fn test_ticket_operations() {
         .await
         .expect("Failed to verify user");
     
-    // Create simple event and ticket for testing
+    // Create simple event and ticket for testing with unique data
     let event_id = Uuid::new_v4();
     let ticket_type_id = Uuid::new_v4();
     let ticket_id = Uuid::new_v4();
+    let unique_id = get_unique_test_identifier();
     
     sqlx::query(
         "INSERT INTO events (id, organizer_id, title, description, location, start_time, end_time, created_at, updated_at)
-         VALUES ($1, $2, 'Test Event', 'Test Description', 'Test Location', 
+         VALUES ($1, $2, $3, 'Test Description', 'Test Location', 
                  NOW() + INTERVAL '1 day', NOW() + INTERVAL '1 day' + INTERVAL '3 hours', NOW(), NOW())"
     )
     .bind(event_id)
     .bind(user_id)
+    .bind(format!("Test Event {}", unique_id))
     .execute(&pool).await.expect("Failed to create event");
     
     sqlx::query(
         "INSERT INTO ticket_types (id, event_id, name, description, currency, total_supply, remaining, is_active, created_at, updated_at)
-         VALUES ($1, $2, 'General', 'Test ticket', 'XLM', 100, 100, true, NOW(), NOW())"
+         VALUES ($1, $2, $3, 'Test ticket', 'XLM', 100, 100, true, NOW(), NOW())"
     )
     .bind(ticket_type_id)
     .bind(event_id)
+    .bind(format!("General {}", unique_id))
     .execute(&pool).await.expect("Failed to create ticket type");
     
     sqlx::query(
@@ -416,22 +393,19 @@ async fn test_ticket_operations() {
         let body = test::read_body(resp).await;
         println!("❌ Get tickets failed: {}", String::from_utf8_lossy(&body));
     }
-    
-    cleanup_test_db(&pool).await;
 }
 
 #[actix_web::test]
 async fn test_admin_operations() {
     let pool = setup_test_db().await;
-    cleanup_test_db(&pool).await;
     
-    // Create admin user
+    // Create admin user with unique data
     let admin_id = Uuid::new_v4();
-    let admin_email = format!("admin{}@example.com", admin_id.simple());
+    let unique_id = get_unique_test_identifier();
+    let admin_email = format!("admin{}@example.com", unique_id);
+    let admin_username = format!("admin{}", unique_id);
     
-    // Go back to cost factor 4 for debugging
     let password_hash = bcrypt::hash("password123", 4).unwrap();
-    println!("🔐 Created admin user with hash: {}", password_hash);
     
     sqlx::query(
         r#"
@@ -440,7 +414,7 @@ async fn test_admin_operations() {
         "#
     )
     .bind(admin_id)
-    .bind(format!("admin{}", admin_id.simple()))
+    .bind(admin_username)
     .bind(&admin_email)
     .bind(password_hash)
     .execute(&pool)
@@ -448,22 +422,6 @@ async fn test_admin_operations() {
     .expect("Failed to create admin user");
     
     println!("👑 Created admin user: {}", admin_email);
-    
-    // Add a small delay to ensure database consistency
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    
-    // Verify the user was created correctly
-    let user_check = sqlx::query("SELECT email, role, email_verified FROM users WHERE email = $1")
-        .bind(&admin_email)
-        .fetch_one(&pool)
-        .await
-        .expect("Should find admin user");
-    
-    let stored_email: String = user_check.get("email");
-    let stored_role: String = user_check.get("role");
-    let is_verified: bool = user_check.get("email_verified");
-    
-    println!("🔍 Verified admin in DB: email={}, role={}, verified={}", stored_email, stored_role, is_verified);
     
     let admin_token = get_auth_token(&pool, &admin_email).await;
     
@@ -488,11 +446,9 @@ async fn test_admin_operations() {
         let body = test::read_body(resp).await;
         println!("❌ Admin events access failed: {}", String::from_utf8_lossy(&body));
     }
-    
-    cleanup_test_db(&pool).await;
 }
 
-// Stellar service tests
+// Stellar operations tests (these don't need database isolation)
 #[tokio::test]
 async fn test_stellar_service_basic_operations() {
     dotenv::from_filename(".env.test").ok();
@@ -521,8 +477,6 @@ async fn test_stellar_service_basic_operations() {
     assert!(!tx_hash.is_empty(), "Transaction hash should not be empty");
     println!("✅ Mock transaction hash: {}", tx_hash);
     
-    // For testnet, mock transactions should be considered valid
-    // Skip verification test for now since it's mock data
     println!("✅ Stellar service basic operations test passed");
 }
 
@@ -550,7 +504,7 @@ async fn test_bcrypt_cost_factor_investigation() {
     assert!(verify4, "Cost 4 hash should verify");
     assert!(verify10, "Cost 10 hash should verify");
     
-    println!("✅ Bcrypt cost factor test passed - cost factor is NOT the issue");
+    println!("✅ Bcrypt cost factor test passed");
 }
 
 #[tokio::test]

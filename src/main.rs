@@ -15,7 +15,8 @@ use std::{env, time::Duration};
 use log::{info, error, warn};
 use serde_json::json;
 
-use crate::controllers::configure_routes;
+use blocstage::controllers::configure_routes;
+use blocstage::api_info;
 
 async fn health_check() -> impl Responder {
     HttpResponse::Ok().json(json!({
@@ -24,25 +25,25 @@ async fn health_check() -> impl Responder {
         "timestamp": chrono::Utc::now().to_rfc3339()
     }))
 }
-
-// API info endpoint. TODO: this will be moved to the /api scope
-pub async fn api_info() -> impl Responder {
-    HttpResponse::Ok().json(json!({
-        "name": "Blocstage Ticketing API",
-        "version": env!("CARGO_PKG_VERSION"),
-        "description": "Decentralized ticketing platform on Stellar",
-        "endpoints": {
-            "health": "/health",
-            "api_docs": "/api",
-            "auth": "/api/auth/*",
-            "events": "/api/events/*",
-            "tickets": "/api/tickets/*",
-            "users": "/api/users/*",
-            "transactions": "/api/transactions/*",
-            "admin": "/api/admin/*"
-        }
-    }))
-}
+// Moved this to lib.rs
+// // API info endpoint. TODO: this will be moved to the /api scope
+// pub async fn api_info() -> impl Responder {
+//     HttpResponse::Ok().json(json!({
+//         "name": "Blocstage Ticketing API",
+//         "version": env!("CARGO_PKG_VERSION"),
+//         "description": "Decentralized ticketing platform on Stellar",
+//         "endpoints": {
+//             "health": "/health",
+//             "api_docs": "/api",
+//             "auth": "/api/auth/*",
+//             "events": "/api/events/*",
+//             "tickets": "/api/tickets/*",
+//             "users": "/api/users/*",
+//             "transactions": "/api/transactions/*",
+//             "admin": "/api/admin/*"
+//         }
+//     }))
+// }
 
 // 404 handler for undefined routes
 async fn not_found() -> impl Responder {
