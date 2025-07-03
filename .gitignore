@@ -1,3 +1,4 @@
 /target
 .env
 reset_database.sh
+.env.test
