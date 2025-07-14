@@ -1,5 +1,5 @@
 use crate::services::crypto::KeyEncryption;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use rand::{distr::Alphanumeric, rng, Rng};
 use serde::{Deserialize, Serialize};
@@ -27,7 +27,7 @@ pub struct User {
     pub role: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CreateUserRequest {
     pub username: String,
     pub email: String,
@@ -124,7 +124,8 @@ impl User {
         public_key: &str,
         secret_key: &str,
     ) -> Result<Self> {
-        let key_encryption = KeyEncryption::new();
+        let key_encryption = KeyEncryption::new()
+            .map_err(|e| anyhow!("Failed to initialize crypto service: {}", e))?;
         let encrypted_secret = key_encryption
             .encrypt_secret_key(secret_key)
             .map_err(|e| anyhow::anyhow!("Failed to encrypt secret key: {}", e))?;
@@ -154,7 +155,8 @@ impl User {
     pub fn decrypt_stellar_secret(&self) -> Result<String, Box<dyn std::error::Error>> {
         match &self.stellar_secret_key_encrypted {
             Some(encrypted) => {
-                let key_encryption = KeyEncryption::new();
+                let key_encryption = KeyEncryption::new()
+                    .map_err(|e| anyhow!("Failed to initialize crypto service: {}", e))?;
                 key_encryption.decrypt_secret_key(encrypted)
             }
             None => Err("No encrypted secret key found".into()),
