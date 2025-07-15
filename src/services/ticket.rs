@@ -229,7 +229,7 @@ impl TicketService {
         .fetch_one(&mut **tx)
         .await?;
 
-        // Maybe manually construct ticket from row?
+        // TODO! Maybe manually construct ticket from row?
         let ticket = Ticket {
             id: row.id,
             ticket_type_id: row.ticket_type_id,
@@ -392,7 +392,7 @@ impl TicketService {
                     price: row.price,
                     currency: row.currency.expect("Currency should have a default value"),
                     total_supply: row.total_supply,
-                    remaining: row.remaining, // This will still be None
+                    remaining: row.remaining,
                     is_active: row.is_active,
                     created_at: row.created_at,
                     updated_at: row.updated_at,
@@ -450,12 +450,17 @@ impl TicketService {
         let platform_wallet = env::var("PLATFORM_WALLET_PUBLIC_KEY")
             .map_err(|_| anyhow!("Platform wallet not configured"))?;
 
-        // Get the user's secret key for payment
         // TODO: research secure ways to handle this
-        let user_secret_key = user
-            .stellar_secret_key
+        let encrypted_secret = user
+            .stellar_secret_key_encrypted
             .clone()
             .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
+
+        let crypto = crate::services::crypto::KeyEncryption::new()
+            .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
+        let user_secret_key = crypto
+            .decrypt_secret_key(&encrypted_secret)
+            .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
 
         let amount = transaction.amount.to_string();
         let tx_hash = self
@@ -749,10 +754,16 @@ impl TicketService {
                 .await?
                 .ok_or_else(|| anyhow!("Sender user not found"))?;
 
-            let from_secret = from_user
-                .stellar_secret_key
+            let encrypted_secret = from_user
+                .stellar_secret_key_encrypted
                 .clone()
                 .ok_or_else(|| anyhow!("Sender has no Stellar wallet"))?;
+
+            let crypto = crate::services::crypto::KeyEncryption::new()
+                .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
+            let from_secret = crypto
+                .decrypt_secret_key(&encrypted_secret)
+                .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
 
             let to_public = to_user
                 .stellar_public_key
@@ -917,7 +928,7 @@ mod tests {
         dotenv::dotenv().ok();
         env::set_var("APP_ENV", "test");
 
-        // Set required environment variables for testing
+        // Set env variables for testing
         env::set_var(
             "NFT_ISSUER_SECRET_KEY",
             "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
@@ -948,7 +959,7 @@ mod tests {
         pool
     }
 
-    // Helper to create test user
+    // Helpers
     async fn create_test_user(pool: &PgPool, suffix: &str) -> Uuid {
         let unique_id = Uuid::new_v4().simple().to_string();
         let user_id = Uuid::new_v4();
@@ -967,7 +978,6 @@ mod tests {
         user_id
     }
 
-    // Helper to create test event
     async fn create_test_event(pool: &PgPool, organizer_id: Uuid, suffix: &str) -> Uuid {
         let event_id = Uuid::new_v4();
         let unique_id = Uuid::new_v4().simple().to_string();
@@ -990,7 +1000,6 @@ mod tests {
         event_id
     }
 
-    // Helper to create test ticket type
     async fn create_test_ticket_type(
         pool: &PgPool,
         event_id: Uuid,
@@ -1023,12 +1032,10 @@ mod tests {
         ticket_type_id
     }
 
-    // Helper to add stellar keys to user
     async fn add_stellar_keys_to_user(pool: &PgPool, user_id: Uuid) {
         let public_key = "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
         let secret_key = "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
 
-        // Encrypt the secret key if crypto service is available
         let crypto = KeyEncryption::new().expect("Failed to create KeyEncryption");
         let encrypted_secret = crypto
             .encrypt_secret_key(secret_key)
@@ -1258,7 +1265,7 @@ mod tests {
             // This will likely fail due to mock payment processing, but test the flow
             let result = service.purchase_ticket(ticket_type_id, user_id).await;
 
-            // In test environment with mock stellar service, this might succeed or fail
+            // In test env with mock stellar service, this might succeed or fail
             // depending on payment processing implementation
             match result {
                 Ok(ticket) => {
@@ -1266,7 +1273,7 @@ mod tests {
                     cleanup_test_ticket(&pool, ticket.id).await;
                 }
                 Err(e) => {
-                    // Expected if payment processing fails in test environment
+                    // Expected if payment processing fails in test env
                     println!("Paid ticket purchase failed as expected in test: {}", e);
                 }
             }
@@ -1798,7 +1805,6 @@ mod tests {
 
             let organizer_id = create_test_user(&pool, "organizer").await;
             let user_id = create_test_user(&pool, "buyer").await;
-            // Don't add stellar keys to user
 
             let event_id = create_test_event(&pool, organizer_id, "no_wallet").await;
             let ticket_type_id =
@@ -2085,14 +2091,13 @@ mod tests {
             let user_id = create_test_user(&pool, "buyer").await;
             let event_id = create_test_event(&pool, organizer_id, "last_ticket").await;
             let ticket_type_id =
-                create_test_ticket_type(&pool, event_id, "last_ticket", None, Some(1)).await; // Only 1 ticket
+                create_test_ticket_type(&pool, event_id, "last_ticket", None, Some(1)).await;
 
             let result = service.purchase_ticket(ticket_type_id, user_id).await;
             assert!(result.is_ok(), "Last ticket purchase should succeed");
 
             let ticket = result.unwrap();
 
-            // Verify remaining count is now 0
             let updated_ticket_type = TicketType::find_by_id(&pool, ticket_type_id)
                 .await
                 .expect("Should find ticket type")
