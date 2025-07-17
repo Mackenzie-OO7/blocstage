@@ -131,7 +131,7 @@ pub async fn purchase_ticket(
 
     match create_ticket(&pool).await {
         Ok(ticket) => match ticket.purchase_ticket(*ticket_type_id, user.id).await {
-            Ok(ticket) => {
+            Ok((ticket, _transaction)) => {
                 info!(
                     "Ticket purchased: {} by verified user {}",
                     ticket.id, user.id

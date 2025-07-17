@@ -11,7 +11,7 @@ use aws_sdk_s3::operation::put_object::PutObjectOutput;
 use aws_sdk_s3::Client as S3Client;
 use base64::{engine::general_purpose, Engine as _};
 use bigdecimal::BigDecimal;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use log::{error, info, warn};
@@ -20,6 +20,7 @@ use printpdf::{Mm, PdfDocument, Point, Rgb};
 use qrcode::render::svg;
 use qrcode::QrCode;
 use rust_decimal::prelude::{Signed, Zero};
+use serde::Serialize;
 use sqlx::{PgPool, Postgres, Transaction as SqlxTransaction};
 use std::env;
 use std::path::Path;
@@ -31,6 +32,20 @@ pub struct TicketService {
     pool: PgPool,
     stellar: StellarService,
     s3_client: Option<S3Client>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TicketStatusResponse {
+    pub ticket_id: Uuid,
+    pub ticket_status: String,
+    pub is_valid: bool,
+    pub event_id: Uuid,
+    pub event_status: String,
+    pub effective_event_status: String,
+    pub event_start_time: DateTime<Utc>,
+    pub event_end_time: DateTime<Utc>,
+    pub can_be_used: bool,
+    pub reason: Option<String>,
 }
 
 impl TicketService {
@@ -61,116 +76,317 @@ impl TicketService {
         Ok(S3Client::new(&config))
     }
 
-    pub async fn purchase_ticket(&self, ticket_type_id: Uuid, user_id: Uuid) -> Result<Ticket> {
-        let mut tx = self.pool.begin().await?;
+    pub async fn validate_ticket_purchase(
+        &self,
+        ticket_type_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<(TicketType, Event, User)> {
+        // Get ticket type
+        let ticket_type = TicketType::find_by_id(&self.pool, ticket_type_id)
+            .await?
+            .ok_or_else(|| anyhow!("Ticket type not found"))?;
 
-        // Get ticket type with locking to prevent race conditions
-        let ticket_type = self
-            .get_ticket_type_with_lock(&mut tx, ticket_type_id)
-            .await?;
+        // Check if ticket type is active
+        if !ticket_type.is_active {
+            return Err(anyhow!("This ticket type is no longer available"));
+        }
 
+        // Check remaining tickets
         if let Some(remaining) = ticket_type.remaining {
             if remaining <= 0 {
-                return Err(anyhow!("No tickets remaining"));
+                return Err(anyhow!("No tickets remaining for this type"));
             }
         }
 
-        if !ticket_type.is_active {
-            return Err(anyhow!("Ticket sales are not currently active"));
+        // Get the event
+        let event = Event::find_by_id(&self.pool, ticket_type.event_id)
+            .await?
+            .ok_or_else(|| anyhow!("Event not found"))?;
+
+        // TEMPORAL VALIDATION: Check if event can sell tickets
+        if !event.can_sell_tickets() {
+            let effective_status = event.get_effective_status();
+            match effective_status.as_str() {
+                "ended" => {
+                    return Err(anyhow!(
+                        "Cannot purchase tickets for this event as it has already ended on {}",
+                        event.end_time.format("%B %d, %Y at %H:%M UTC")
+                    ))
+                }
+                "cancelled" => return Err(anyhow!("This event has been cancelled")),
+                "draft" => return Err(anyhow!("This event is not yet available for ticket sales")),
+                "ongoing" => {
+                    return Err(anyhow!(
+                        "Ticket sales have closed. This event is currently ongoing (started at {})",
+                        event.start_time.format("%B %d, %Y at %H:%M UTC")
+                    ))
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "Tickets are not currently available for this event"
+                    ))
+                }
+            }
         }
 
+        // Get user
         let user = User::find_by_id(&self.pool, user_id)
             .await?
             .ok_or_else(|| anyhow!("User not found"))?;
 
-        let qr_data = format!(
-            "ticket:{}:{}:{}",
-            ticket_type_id,
-            user_id,
-            Utc::now().timestamp()
-        );
-        let qr_code = self.generate_qr_code(&qr_data)?;
+        // Check if user has valid wallet for payment
+        if user.stellar_public_key.is_none() || user.stellar_secret_key_encrypted.is_none() {
+            return Err(anyhow!(
+                "You need to set up a Stellar wallet before purchasing tickets"
+            ));
+        }
 
-        let ticket = self
-            .create_ticket_in_transaction(&mut tx, ticket_type_id, user_id, Some(qr_code))
-            .await?;
+        Ok((ticket_type, event, user))
+    }
 
-        if let Some(price) = ticket_type.price.clone() {
-            if !price.is_zero() {
-                let transaction = self
-                    .create_transaction_in_transaction(
-                        &mut tx,
-                        ticket.id,
-                        user_id,
-                        price,
-                        &ticket_type.currency,
-                        "pending",
-                    )
+    /// Enhanced ticket verification with temporal validation
+    pub async fn verify_ticket_with_temporal_check(&self, ticket_id: Uuid) -> Result<bool> {
+        let ticket = Ticket::find_by_id(&self.pool, ticket_id)
+            .await?
+            .ok_or_else(|| anyhow!("Ticket not found"))?;
+
+        // Check basic ticket status
+        if ticket.status != "valid" {
+            info!(
+                "Ticket {} verification failed: status is {}",
+                ticket_id, ticket.status
+            );
+            return Ok(false);
+        }
+
+        // Get ticket type and event
+        let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
+            .await?
+            .ok_or_else(|| anyhow!("Ticket type not found"))?;
+
+        let event = Event::find_by_id(&self.pool, ticket_type.event_id)
+            .await?
+            .ok_or_else(|| anyhow!("Event not found"))?;
+
+        // TEMPORAL VALIDATION: Check if event is still valid
+        if !event.is_valid() {
+            let effective_status = event.get_effective_status();
+            info!(
+                "Ticket {} verification failed: event {} status is {} (effective: {})",
+                ticket_id, event.id, event.status, effective_status
+            );
+            return Ok(false);
+        }
+
+        // Check if event has ended
+        let now = Utc::now();
+        if now >= event.end_time {
+            info!(
+                "Ticket {} verification failed: event ended at {}",
+                ticket_id, event.end_time
+            );
+            return Ok(false);
+        }
+
+        // NFT verification (if applicable)
+        if let Some(nft_id) = &ticket.nft_identifier {
+            let owner = User::find_by_id(&self.pool, ticket.owner_id)
+                .await?
+                .ok_or_else(|| anyhow!("Ticket owner not found"))?;
+
+            if let Some(public_key) = &owner.stellar_public_key {
+                let issuer_public_key = env::var("NFT_ISSUER_PUBLIC_KEY")
+                    .map_err(|_| anyhow!("NFT issuer not configured"))?;
+
+                let is_valid = self
+                    .stellar
+                    .verify_nft_ownership(public_key, nft_id, &issuer_public_key)
                     .await?;
 
-                let payment_result = self
-                    .process_payment(&user, &ticket_type, &transaction)
-                    .await;
-
-                match payment_result {
-                    Ok(tx_hash) => {
-                        self.update_transaction_hash_in_transaction(
-                            &mut tx,
-                            &transaction,
-                            &tx_hash,
-                        )
-                        .await?;
-                        self.update_transaction_status_in_transaction(
-                            &mut tx,
-                            &transaction,
-                            "completed",
-                        )
-                        .await?;
-
-                        self.decrease_remaining_in_transaction(&mut tx, &ticket_type)
-                            .await?;
-                    }
-                    Err(e) => {
-                        self.update_transaction_status_in_transaction(
-                            &mut tx,
-                            &transaction,
-                            "failed",
-                        )
-                        .await?;
-
-                        self.update_ticket_status_in_transaction(&mut tx, &ticket, "cancelled")
-                            .await?;
-
-                        tx.rollback().await?;
-                        return Err(e);
-                    }
+                if !is_valid {
+                    info!(
+                        "Ticket {} verification failed: NFT ownership verification failed",
+                        ticket_id
+                    );
+                    return Ok(false);
                 }
             } else {
-                self.decrease_remaining_in_transaction(&mut tx, &ticket_type)
-                    .await?;
+                info!(
+                    "Ticket {} verification failed: owner has no Stellar wallet",
+                    ticket_id
+                );
+                return Ok(false);
             }
-        } else {
-            self.decrease_remaining_in_transaction(&mut tx, &ticket_type)
-                .await?;
         }
+
+        // Check transaction status
+        if let Some(transaction) = Transaction::find_by_ticket(&self.pool, ticket_id).await? {
+            if transaction.status != "completed" {
+                info!(
+                    "Ticket {} verification failed: transaction status is {}",
+                    ticket_id, transaction.status
+                );
+                return Ok(false);
+            }
+        }
+
+        info!("Ticket {} verification successful", ticket_id);
+        Ok(true)
+    }
+
+    pub async fn purchase_ticket(
+        &self,
+        ticket_type_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<(Ticket, Transaction)> {
+        // Use enhanced validation
+        let (ticket_type, event, user) = self
+            .validate_ticket_purchase(ticket_type_id, user_id)
+            .await?;
+
+        // Update event status if needed before proceeding
+        let updated_event = event.update_status_if_needed(&self.pool).await?;
+
+        // Double-check after status update
+        if !updated_event.can_sell_tickets() {
+            return Err(anyhow!(
+                "Event status changed - tickets are no longer available"
+            ));
+        }
+
+        // Proceed with existing purchase logic...
+        let mut tx = self.pool.begin().await?;
+
+        // Reserve a ticket
+        let updated_ticket_type = self
+            .reserve_ticket_in_transaction(&mut tx, &ticket_type)
+            .await?;
+
+        // 🔥 FIX: Use the service method, not model method
+        let ticket = self
+            .create_ticket_in_transaction(
+                &mut tx,
+                updated_ticket_type.id,
+                user_id,
+                None, // QR code will be generated later
+            )
+            .await?;
+
+        // 🔥 FIX: Use the service method, not model method
+        let transaction = self
+            .create_transaction_in_transaction(
+                &mut tx,
+                ticket.id,
+                user_id,
+                ticket_type
+                    .price
+                    .clone()
+                    .unwrap_or_else(|| BigDecimal::from(0)),
+                &ticket_type.currency,
+                "pending",
+            )
+            .await?;
+
+        // Process payment
+        let tx_hash = self
+            .process_payment(&user, &ticket_type, &transaction)
+            .await?;
+
+        // 🔥 FIX: Use the service method to update transaction
+        let completed_transaction = self
+            .update_transaction_hash_in_transaction(&mut tx, &transaction, &tx_hash)
+            .await?;
+
+        let completed_transaction = self
+            .update_transaction_status_in_transaction(&mut tx, &completed_transaction, "completed")
+            .await?;
 
         tx.commit().await?;
 
-        let ticket_id = ticket.id;
-        let pool = self.pool.clone();
+        info!(
+            "Ticket purchased successfully: ticket_id={}, transaction_id={}, tx_hash={}",
+            ticket.id, completed_transaction.id, tx_hash
+        );
 
-        tokio::spawn(async move {
-            match Ticket::find_by_id(&pool, ticket_id).await {
-                Ok(Some(_)) => {
-                    info!("PDF ticket generated for ticket: {}", ticket_id);
-                    // TODO: implement the actual PDF generation later
-                }
-                Ok(None) => error!("Failed to generate PDF ticket: Ticket not found"),
-                Err(e) => error!("Failed to generate PDF ticket: {}", e),
+        Ok((ticket, completed_transaction))
+    }
+
+    pub async fn get_ticket_status_with_context(
+        &self,
+        ticket_id: Uuid,
+    ) -> Result<TicketStatusResponse> {
+        let ticket = Ticket::find_by_id(&self.pool, ticket_id)
+            .await?
+            .ok_or_else(|| anyhow!("Ticket not found"))?;
+
+        let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
+            .await?
+            .ok_or_else(|| anyhow!("Ticket type not found"))?;
+
+        let event = Event::find_by_id(&self.pool, ticket_type.event_id)
+            .await?
+            .ok_or_else(|| anyhow!("Event not found"))?;
+
+        let effective_event_status = event.get_effective_status();
+        let effective_status_clone = effective_event_status.clone();
+        let is_valid = self.verify_ticket_with_temporal_check(ticket_id).await?;
+
+        Ok(TicketStatusResponse {
+            ticket_id: ticket.id,
+            ticket_status: ticket.status.clone(),
+            is_valid,
+            event_id: event.id,
+            event_status: event.status.clone(),
+            effective_event_status,
+            event_start_time: event.start_time,
+            event_end_time: event.end_time,
+            can_be_used: is_valid && effective_status_clone == "ongoing",
+            reason: if !is_valid {
+                Some(self.get_invalid_reason(&ticket, &event).await)
+            } else {
+                None
+            },
+        })
+    }
+
+    async fn reserve_ticket_in_transaction<'a>(
+        &self,
+        tx: &mut SqlxTransaction<'a, Postgres>,
+        ticket_type: &TicketType,
+    ) -> Result<TicketType> {
+        // Get ticket type with lock to prevent race conditions
+        let locked_ticket_type = self.get_ticket_type_with_lock(tx, ticket_type.id).await?;
+
+        // Check if tickets are still available
+        if let Some(remaining) = locked_ticket_type.remaining {
+            if remaining <= 0 {
+                return Err(anyhow!("No tickets remaining for this type"));
             }
-        });
+        }
 
-        Ok(ticket)
+        // Decrease the remaining count
+        self.decrease_remaining_in_transaction(tx, &locked_ticket_type)
+            .await
+    }
+
+    async fn get_invalid_reason(&self, ticket: &Ticket, event: &Event) -> String {
+        if ticket.status != "valid" {
+            return format!("Ticket status is {}", ticket.status);
+        }
+
+        let effective_status = event.get_effective_status();
+        match effective_status.as_str() {
+            "ended" => format!(
+                "Event ended on {}",
+                event.end_time.format("%B %d, %Y at %H:%M UTC")
+            ),
+            "cancelled" => "Event has been cancelled".to_string(),
+            "scheduled" => format!(
+                "Event hasn't started yet (starts {})",
+                event.start_time.format("%B %d, %Y at %H:%M UTC")
+            ),
+            _ => "Unknown reason".to_string(),
+        }
     }
 
     async fn get_ticket_type_with_lock<'a>(
@@ -1135,7 +1351,7 @@ mod tests {
             let result = service.purchase_ticket(ticket_type_id, user_id).await;
             assert!(result.is_ok(), "Free ticket purchase should succeed");
 
-            let ticket = result.unwrap();
+            let (ticket, _transaction) = result.unwrap();
             assert_eq!(ticket.owner_id, user_id);
             assert_eq!(ticket.ticket_type_id, ticket_type_id);
             assert_eq!(ticket.status, "valid");
@@ -1268,7 +1484,7 @@ mod tests {
             // In test env with mock stellar service, this might succeed or fail
             // depending on payment processing implementation
             match result {
-                Ok(ticket) => {
+                Ok((ticket, _transaction)) => {
                     assert_eq!(ticket.owner_id, user_id);
                     cleanup_test_ticket(&pool, ticket.id).await;
                 }
@@ -1301,7 +1517,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "verify", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1346,7 +1562,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "cancelled", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1391,7 +1607,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "checkin", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1446,7 +1662,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "used", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1485,7 +1701,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "transfer", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, from_user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1524,7 +1740,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "not_owner", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, owner_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1564,7 +1780,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "invalid", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, from_user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1609,7 +1825,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "no_recipient", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, from_user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1652,7 +1868,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "cancel", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket,_transaction) = service
                 .purchase_ticket(ticket_type_id, user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1714,7 +1930,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "nft", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1765,7 +1981,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "invalid_nft", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1810,7 +2026,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "no_wallet", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -1849,7 +2065,7 @@ mod tests {
             let ticket_type_id =
                 create_test_ticket_type(&pool, event_id, "pdf", None, Some(10)).await;
 
-            let ticket = service
+            let (ticket, _transaction) = service
                 .purchase_ticket(ticket_type_id, user_id)
                 .await
                 .expect("Ticket purchase should succeed");
@@ -2027,7 +2243,7 @@ mod tests {
 
             // Clean up successful tickets
             for result in &results {
-                if let Ok(ticket) = result {
+                if let Ok((ticket, _transaction)) = result {
                     cleanup_test_ticket(&pool, ticket.id).await;
                 }
             }
@@ -2061,7 +2277,7 @@ mod tests {
             let result = service.purchase_ticket(ticket_type_id, user_id).await;
             assert!(result.is_ok(), "Unlimited ticket purchase should succeed");
 
-            let ticket = result.unwrap();
+            let (ticket, _transaction) = result.unwrap();
 
             // Verify remaining count is still None (unlimited)
             let updated_ticket_type = TicketType::find_by_id(&pool, ticket_type_id)
@@ -2096,7 +2312,7 @@ mod tests {
             let result = service.purchase_ticket(ticket_type_id, user_id).await;
             assert!(result.is_ok(), "Last ticket purchase should succeed");
 
-            let ticket = result.unwrap();
+            let (ticket, _transaction)  = result.unwrap();
 
             let updated_ticket_type = TicketType::find_by_id(&pool, ticket_type_id)
                 .await

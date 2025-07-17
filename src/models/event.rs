@@ -1,11 +1,11 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgArguments, Arguments, PgPool};
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct Event {
     pub id: Uuid,
     pub organizer_id: Uuid,
@@ -69,7 +69,9 @@ impl Event {
         let id = Uuid::new_v4();
         let now = Utc::now();
 
-        // just debug logging
+        Self::validate_event_timing(event.start_time, event.end_time)?;
+
+        // debug logging
         info!("🎪 Creating event with:");
         info!("   - id: {}", id);
         info!("   - organizer_id: {}", organizer_id);
@@ -93,14 +95,14 @@ impl Event {
         let event = sqlx::query_as!(
             Event,
             r#"
-            INSERT INTO events (
-                id, organizer_id, title, description, location, 
-                start_time, end_time, created_at, updated_at,
-                status, banner_image_url, category, tags
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            RETURNING *
-            "#,
+        INSERT INTO events (
+            id, organizer_id, title, description, location, 
+            start_time, end_time, created_at, updated_at,
+            status, banner_image_url, category, tags
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        RETURNING *
+        "#,
             id,
             organizer_id,
             event.title,
@@ -149,13 +151,19 @@ impl Event {
     pub async fn update(&self, pool: &PgPool, update: UpdateEventRequest) -> Result<Self> {
         let now = Utc::now();
 
+        let new_start_time = update.start_time.unwrap_or(self.start_time);
+        let new_end_time = update.end_time.unwrap_or(self.end_time);
+
+        if update.start_time.is_some() || update.end_time.is_some() {
+            Self::validate_event_timing(new_start_time, new_end_time)?;
+        }
+
         let mut query = String::from("UPDATE events SET updated_at = $1");
         let mut args = PgArguments::default();
         args.add(now);
 
         let mut param_index = 2;
 
-        // add each field that is provided in the update request
         if let Some(title) = &update.title {
             query.push_str(&format!(", title = ${}", param_index));
             args.add(title);
@@ -232,6 +240,178 @@ impl Event {
         .await?;
 
         Ok(event)
+    }
+
+    pub fn validate_event_timing(start_time: DateTime<Utc>, end_time: DateTime<Utc>) -> Result<()> {
+        let now = Utc::now();
+
+        // Rule 1: Start time must be in the future (allow 5 minute buffer for immediate events)
+        let buffer = chrono::Duration::minutes(5);
+        if start_time < (now - buffer) {
+            return Err(anyhow!(
+                "Event start time cannot be in the past. Start time: {}, Current time: {}",
+                start_time.format("%Y-%m-%d %H:%M:%S UTC"),
+                now.format("%Y-%m-%d %H:%M:%S UTC")
+            ));
+        }
+
+        // Rule 2: End time must be after start time
+        if end_time <= start_time {
+            return Err(anyhow!(
+                "Event end time must be after start time. Start: {}, End: {}",
+                start_time.format("%Y-%m-%d %H:%M:%S UTC"),
+                end_time.format("%Y-%m-%d %H:%M:%S UTC")
+            ));
+        }
+
+        // Rule 3: Event duration must be reasonable (not longer than 1 year)
+        let max_duration = chrono::Duration::days(365);
+        if end_time - start_time > max_duration {
+            return Err(anyhow!(
+                "Event duration cannot exceed 1 year. Duration: {} days",
+                (end_time - start_time).num_days()
+            ));
+        }
+
+        // Rule 4: Event duration must be at least 15 minutes
+        let min_duration = chrono::Duration::minutes(15);
+        if end_time - start_time < min_duration {
+            return Err(anyhow!(
+                "Event duration must be at least 15 minutes. Current duration: {} minutes",
+                (end_time - start_time).num_minutes()
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Get the effective status of the event based on current time
+    pub fn get_effective_status(&self) -> String {
+        let now = Utc::now();
+
+        match self.status.as_str() {
+            "cancelled" => "cancelled".to_string(),
+            "draft" => "draft".to_string(),
+            "active" => {
+                if now < self.start_time {
+                    "scheduled".to_string() // Active but hasn't started yet
+                } else if now >= self.start_time && now < self.end_time {
+                    "ongoing".to_string() // Currently happening
+                } else {
+                    "ended".to_string() // Past end time
+                }
+            }
+            _ => self.status.clone(),
+        }
+    }
+
+    /// Check if the event is currently accepting ticket purchases
+    pub fn can_sell_tickets(&self) -> bool {
+        let now = Utc::now();
+
+        // Must be active status
+        if self.status != "active" {
+            return false;
+        }
+
+        // Must not have ended
+        if now >= self.end_time {
+            return false;
+        }
+
+        // Optionally: stop selling tickets 1 hour before event starts
+        let ticket_sales_cutoff = self.start_time - chrono::Duration::hours(1);
+        if now > ticket_sales_cutoff {
+            return false;
+        }
+
+        true
+    }
+
+    /// Check if event is currently valid (not ended or cancelled)
+    pub fn is_valid(&self) -> bool {
+        let now = Utc::now();
+
+        match self.status.as_str() {
+            "cancelled" => false,
+            "draft" => false,
+            "active" => now < self.end_time, // Only valid if not ended
+            _ => false,
+        }
+    }
+
+    /// Update event status in database if it should be ended
+    pub async fn update_status_if_needed(&self, pool: &PgPool) -> Result<Event> {
+        let effective_status = self.get_effective_status();
+
+        // If effective status is different from stored status and it's "ended"
+        if effective_status == "ended" && self.status == "active" {
+            info!(
+                "Auto-updating event {} status from active to ended",
+                self.id
+            );
+
+            let updated_event = sqlx::query_as!(
+                Event,
+                r#"
+                UPDATE events 
+                SET status = 'ended', updated_at = $1
+                WHERE id = $2
+                RETURNING *
+                "#,
+                Utc::now(),
+                self.id
+            )
+            .fetch_one(pool)
+            .await?;
+
+            Ok(updated_event)
+        } else {
+            Ok(self.clone())
+        }
+    }
+
+    /// Get events that need status updates (batch operation)
+    pub async fn get_events_needing_status_update(pool: &PgPool) -> Result<Vec<Event>> {
+        let now = Utc::now();
+
+        let events = sqlx::query_as!(
+            Event,
+            r#"
+            SELECT * FROM events 
+            WHERE status = 'active' AND end_time < $1
+            ORDER BY end_time DESC
+            LIMIT 100
+            "#,
+            now
+        )
+        .fetch_all(pool)
+        .await?;
+
+        Ok(events)
+    }
+
+    // Batch update ended events (for background job)
+    pub async fn batch_update_ended_events(pool: &PgPool) -> Result<usize> {
+        let now = Utc::now();
+
+        let result = sqlx::query!(
+            r#"
+            UPDATE events 
+            SET status = 'ended', updated_at = $1
+            WHERE status = 'active' AND end_time < $1
+            "#,
+            now
+        )
+        .execute(pool)
+        .await?;
+
+        let count = result.rows_affected() as usize;
+        if count > 0 {
+            info!("Auto-updated {} events from active to ended", count);
+        }
+
+        Ok(count)
     }
 
     pub async fn search(pool: &PgPool, search: SearchEventsRequest) -> Result<Vec<Self>> {
@@ -539,7 +719,7 @@ mod tests {
                 title: "Bad Time Event".to_string(),
                 description: None,
                 location: None,
-                start_time: now + Duration::hours(3), 
+                start_time: now + Duration::hours(3),
                 end_time: now + Duration::hours(1),
                 category: None,
                 tags: None,
@@ -947,10 +1127,7 @@ mod tests {
                 .iter()
                 .filter(|e| e.location.as_ref() == Some(&"Ibadan".to_string()))
                 .collect();
-            assert!(
-                sf_events.len() >= 2,
-                "Should find at least 2 Ibadan events"
-            );
+            assert!(sf_events.len() >= 2, "Should find at least 2 Ibadan events");
 
             cleanup_search_test_data(&pool, events, organizers).await;
         }
