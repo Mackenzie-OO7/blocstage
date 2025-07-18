@@ -10,7 +10,7 @@ pub use controllers::configure_routes;
 
 pub async fn api_info() -> impl Responder {
     HttpResponse::Ok().json(json!({
-        "name": "Blocstage Ticketing API",
+        "name": "BlocStage Ticketing API",
         "version": env!("CARGO_PKG_VERSION"),
         "description": "Decentralized ticketing platform on Stellar",
         "endpoints": {

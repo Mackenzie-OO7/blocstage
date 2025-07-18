@@ -29,7 +29,7 @@ async fn health_check() -> impl Responder {
 // // API info endpoint. TODO: this will be moved to the /api scope
 // pub async fn api_info() -> impl Responder {
 //     HttpResponse::Ok().json(json!({
-//         "name": "Blocstage Ticketing API",
+//         "name": "BlocStage Ticketing API",
 //         "version": env!("CARGO_PKG_VERSION"),
 //         "description": "Decentralized ticketing platform on Stellar",
 //         "endpoints": {
