@@ -5,6 +5,7 @@ use crate::models::ticket_type::{CreateTicketTypeRequest, TicketType};
 use crate::services::ticket::TicketService;
 use actix_web::{web, HttpResponse, Responder};
 use anyhow::Result;
+use chrono::Utc;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -28,16 +29,82 @@ async fn create_ticket(pool: &PgPool) -> Result<TicketService> {
 pub async fn create_ticket_type(
     pool: web::Data<PgPool>,
     event_id: web::Path<Uuid>,
-    ticket_data: web::Json<CreateTicketTypeRequest>,
+    ticket_type_data: web::Json<CreateTicketTypeRequest>,
     user: AuthenticatedUser,
 ) -> impl Responder {
-    let _event =
-        match crate::middleware::auth::check_event_ownership(&pool, user.id, *event_id).await {
-            Ok(event) => event,
-            Err(response) => return response,
-        };
+    let event = match Event::find_by_id(&pool, *event_id).await {
+        Ok(Some(event)) => event,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(ErrorResponse {
+                error: "Event not found".to_string(),
+            });
+        }
+        Err(e) => {
+            error!("Failed to fetch event: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch event".to_string(),
+            });
+        }
+    };
 
-    match TicketType::create(&pool, *event_id, ticket_data.into_inner()).await {
+    if event.organizer_id != user.id {
+        return HttpResponse::Forbidden().json(ErrorResponse {
+            error: "You don't have permission to create ticket types for this event".to_string(),
+        });
+    }
+
+    let updated_event = match event.update_status_if_needed(&pool).await {
+        Ok(event) => event,
+        Err(e) => {
+            error!("Failed to update event status: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to validate event status".to_string(),
+            });
+        }
+    };
+
+    let effective_status = updated_event.get_effective_status();
+    match effective_status.as_str() {
+        "ended" => {
+            return HttpResponse::BadRequest().json(ErrorResponse {
+                error: format!(
+                    "Cannot create ticket types for an event that has already ended on {}",
+                    updated_event.end_time.format("%B %d, %Y at %H:%M UTC")
+                ),
+            });
+        }
+        "cancelled" => {
+            return HttpResponse::BadRequest().json(ErrorResponse {
+                error: "Cannot create ticket types for a cancelled event".to_string(),
+            });
+        }
+        "ongoing" => {
+            return HttpResponse::BadRequest().json(ErrorResponse {
+                error: format!(
+                    "Cannot create ticket types for an event that is currently ongoing (started at {})",
+                    updated_event.start_time.format("%B %d, %Y at %H:%M UTC")
+                ),
+            });
+        }
+        "scheduled" | "active" => {
+        }
+        _ => {
+            return HttpResponse::BadRequest().json(ErrorResponse {
+                error: "Event is not in a valid state for creating ticket types".to_string(),
+            });
+        }
+    }
+
+    // don't allow ticket creation too close to event start
+    let now = Utc::now();
+    let time_until_event = updated_event.start_time - now;
+    if time_until_event < chrono::Duration::hours(1) {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: "Cannot create ticket types less than 1 hour before the event starts".to_string(),
+        });
+    }
+
+    match TicketType::create(&pool, *event_id, ticket_type_data.into_inner()).await {
         Ok(ticket_type) => {
             info!(
                 "Ticket type created: {} for event {} by user {}",
@@ -47,8 +114,17 @@ pub async fn create_ticket_type(
         }
         Err(e) => {
             error!("Failed to create ticket type: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to create ticket type. Please try again.".to_string(),
+            
+            let error_message = if e.to_string().contains("Price is required") {
+                "Price is required for paid tickets"
+            } else if e.to_string().contains("Currency is required") {
+                "Currency is required for paid tickets"
+            } else {
+                "Failed to create ticket type. Please check your input and try again."
+            };
+
+            HttpResponse::BadRequest().json(ErrorResponse {
+                error: error_message.to_string(),
             })
         }
     }
