@@ -340,6 +340,7 @@ mod tests {
         let create_request = CreateTicketTypeRequest {
             name: format!("Test Ticket Type {}", suffix),
             description: Some(format!("Description for {}", suffix)),
+            is_free: false,
             price: Some(BigDecimal::from_str("50.00").unwrap()),
             currency: Some("XLM".to_string()),
             total_supply: Some(100),

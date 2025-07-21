@@ -118,45 +118,100 @@ pub async fn update_ticket_type_status(
 
 // TICKET PURCHASING
 
+pub async fn claim_free_ticket(
+    pool: web::Data<PgPool>,
+    ticket_type_id: web::Path<Uuid>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    match TicketService::new(pool.get_ref().clone()).await {
+        Ok(ticket_service) => {
+            match ticket_service.claim_free_ticket(*ticket_type_id, user.id).await {
+                Ok(ticket) => {
+                    info!(
+                        "Free ticket claimed successfully: ticket_id={}, user_id={}",
+                        ticket.id, user.id
+                    );
+                    HttpResponse::Ok().json(serde_json::json!({
+                        "success": true,
+                        "message": "Free ticket claimed successfully!",
+                        "ticket": ticket
+                    }))
+                }
+                Err(e) => {
+                    error!("Failed to claim free ticket: {}", e);
+                    
+                    let error_message = if e.to_string().contains("not free") {
+                        "This ticket type is not free. Use the purchase endpoint instead."
+                    } else if e.to_string().contains("already ended") {
+                        "Cannot claim tickets for this event as it has already ended."
+                    } else if e.to_string().contains("No tickets remaining") {
+                        "Sorry, no free tickets remaining for this event."
+                    } else if e.to_string().contains("already have a free ticket") {
+                        "You already have a free ticket for this event."
+                    } else if e.to_string().contains("not yet available") {
+                        "Free tickets are not yet available for this event."
+                    } else {
+                        "Failed to claim free ticket. Please try again."
+                    };
+
+                    HttpResponse::BadRequest().json(ErrorResponse {
+                        error: error_message.to_string(),
+                    })
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to initialize ticket service: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            })
+        }
+    }
+}
+
 pub async fn purchase_ticket(
     pool: web::Data<PgPool>,
     ticket_type_id: web::Path<Uuid>,
     user: AuthenticatedUser,
 ) -> impl Responder {
-    let _verified_user = match crate::middleware::auth::require_verified_user(&pool, user.id).await
-    {
-        Ok(user) => user,
-        Err(response) => return response,
-    };
+    match TicketService::new(pool.get_ref().clone()).await {
+        Ok(ticket_service) => {
+            match ticket_service.purchase_ticket(*ticket_type_id, user.id).await {
+                Ok((ticket, transaction)) => {
+                    info!(
+                        "Paid ticket purchased successfully: ticket_id={}, user_id={}, transaction_id={}",
+                        ticket.id, user.id, transaction.id
+                    );
+                    HttpResponse::Ok().json(serde_json::json!({
+                        "success": true,
+                        "message": "Ticket purchased successfully!",
+                        "ticket": ticket,
+                        "transaction": transaction
+                    }))
+                }
+                Err(e) => {
+                    error!("Failed to purchase ticket: {}", e);
+                    
+                    let error_message = if e.to_string().contains("is free") {
+                        "This ticket type is free. Use the claim endpoint instead."
+                    } else if e.to_string().contains("Stellar wallet") {
+                        "You need to set up a Stellar wallet before purchasing paid tickets."
+                    } else if e.to_string().contains("already ended") {
+                        "Cannot purchase tickets for this event as it has already ended."
+                    } else if e.to_string().contains("No tickets remaining") {
+                        "Sorry, no tickets remaining for this event."
+                    } else if e.to_string().contains("not yet available") {
+                        "Tickets are not yet available for this event."
+                    } else {
+                        "Failed to purchase ticket. Please try again."
+                    };
 
-    match create_ticket(&pool).await {
-        Ok(ticket) => match ticket.purchase_ticket(*ticket_type_id, user.id).await {
-            Ok((ticket, _transaction)) => {
-                info!(
-                    "Ticket purchased: {} by verified user {}",
-                    ticket.id, user.id
-                );
-                HttpResponse::Created().json(ticket)
+                    HttpResponse::BadRequest().json(ErrorResponse {
+                        error: error_message.to_string(),
+                    })
+                }
             }
-            Err(e) => {
-                error!("Failed to purchase ticket: {}", e);
-
-                let error_message = if e.to_string().contains("No tickets remaining") {
-                    "Sorry, there are no tickets remaining for this ticket type."
-                } else if e
-                    .to_string()
-                    .contains("Ticket sales are not currently active")
-                {
-                    "Ticket sales are not currently active for this ticket type."
-                } else {
-                    "Failed to purchase ticket. Please try again."
-                };
-
-                HttpResponse::BadRequest().json(ErrorResponse {
-                    error: error_message.to_string(),
-                })
-            }
-        },
+        }
         Err(e) => {
             error!("Failed to initialize ticket service: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
@@ -411,43 +466,43 @@ pub async fn transfer_ticket(
     }
 }
 
-pub async fn cancel_ticket(
-    pool: web::Data<PgPool>,
-    ticket_id: web::Path<Uuid>,
-    user: AuthenticatedUser,
-) -> impl Responder {
-    match create_ticket(&pool).await {
-        Ok(ticket) => match ticket.cancel_ticket(*ticket_id, user.id).await {
-            Ok(_) => {
-                info!("Ticket cancelled: {} by user {}", ticket_id, user.id);
-                HttpResponse::Ok().json(serde_json::json!({
-                        "message": "Ticket has been successfully cancelled and refund has been processed"
-                    }))
-            }
-            Err(e) => {
-                error!("Failed to cancel ticket: {}", e);
+// pub async fn cancel_ticket(
+//     pool: web::Data<PgPool>,
+//     ticket_id: web::Path<Uuid>,
+//     user: AuthenticatedUser,
+// ) -> impl Responder {
+//     match create_ticket(&pool).await {
+//         Ok(ticket) => match ticket.cancel_ticket(*ticket_id, user.id).await {
+//             Ok(_) => {
+//                 info!("Ticket cancelled: {} by user {}", ticket_id, user.id);
+//                 HttpResponse::Ok().json(serde_json::json!({
+//                         "message": "Ticket has been successfully cancelled and refund has been processed"
+//                     }))
+//             }
+//             Err(e) => {
+//                 error!("Failed to cancel ticket: {}", e);
 
-                let error_message = if e.to_string().contains("You don't own this ticket") {
-                    "You don't own this ticket."
-                } else if e.to_string().contains("Ticket cannot be cancelled") {
-                    "This ticket cannot be cancelled."
-                } else {
-                    "Failed to cancel ticket. Please try again."
-                };
+//                 let error_message = if e.to_string().contains("You don't own this ticket") {
+//                     "You don't own this ticket."
+//                 } else if e.to_string().contains("Ticket cannot be cancelled") {
+//                     "This ticket cannot be cancelled."
+//                 } else {
+//                     "Failed to cancel ticket. Please try again."
+//                 };
 
-                HttpResponse::BadRequest().json(ErrorResponse {
-                    error: error_message.to_string(),
-                })
-            }
-        },
-        Err(e) => {
-            error!("Failed to initialize ticket service: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            })
-        }
-    }
-}
+//                 HttpResponse::BadRequest().json(ErrorResponse {
+//                     error: error_message.to_string(),
+//                 })
+//             }
+//         },
+//         Err(e) => {
+//             error!("Failed to initialize ticket service: {}", e);
+//             HttpResponse::InternalServerError().json(ErrorResponse {
+//                 error: "Internal server error".to_string(),
+//             })
+//         }
+//     }
+// }
 
 pub async fn get_user_tickets(pool: web::Data<PgPool>, user: AuthenticatedUser) -> impl Responder {
     match create_ticket(&pool).await {
@@ -562,13 +617,11 @@ pub async fn admin_cancel_any_ticket(
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/events/{event_id}/tickets")
-            // Ticket types for events
             .route("", web::get().to(get_ticket_types))
             .route("", web::post().to(create_ticket_type)),
     )
     .service(
         web::scope("/tickets")
-            // User ticket ops
             .route("/my-tickets", web::get().to(get_user_tickets))
             .route(
                 "/{ticket_id}/generate-pdf",
@@ -579,13 +632,17 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 web::post().to(convert_to_nft),
             )
             .route("/{ticket_id}/transfer", web::post().to(transfer_ticket))
-            .route("/{ticket_id}/cancel", web::post().to(cancel_ticket)),
+            // .route("/{ticket_id}/cancel", web::post().to(cancel_ticket)),
     )
     .service(
         web::scope("/ticket-types")
             .route(
                 "/{ticket_type_id}/purchase",
                 web::post().to(purchase_ticket),
+            )
+            .route(
+                "/{ticket_type_id}/claim",
+                web::post().to(claim_free_ticket),
             )
             .route(
                 "/{ticket_type_id}/{is_active}",

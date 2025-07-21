@@ -76,34 +76,217 @@ impl TicketService {
         Ok(S3Client::new(&config))
     }
 
-    pub async fn validate_ticket_purchase(
+    pub async fn claim_free_ticket(
+        &self,
+        ticket_type_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Ticket> {
+        let (ticket_type, event, _user) = self
+            .validate_free_ticket_claim(ticket_type_id, user_id)
+            .await?;
+
+        let updated_event = event.update_status_if_needed(&self.pool).await?;
+
+        if !updated_event.can_sell_tickets() {
+            return Err(anyhow!(
+                "Event status changed - tickets are no longer available"
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+
+        let updated_ticket_type = self
+            .reserve_ticket_in_transaction(&mut tx, &ticket_type)
+            .await?;
+
+        let ticket = self
+            .create_ticket_in_transaction(
+                &mut tx,
+                updated_ticket_type.id,
+                user_id,
+                None,
+            )
+            .await?;
+
+        let _transaction = self
+            .create_free_transaction_record(
+                &mut tx,
+                ticket.id,
+                user_id,
+            )
+            .await?;
+
+        tx.commit().await?;
+
+        info!(
+            "Free ticket claimed successfully: ticket_id={}, user_id={}",
+            ticket.id, user_id
+        );
+
+        Ok(ticket)
+    }
+
+    async fn validate_free_ticket_claim(
         &self,
         ticket_type_id: Uuid,
         user_id: Uuid,
     ) -> Result<(TicketType, Event, User)> {
-        // Get ticket type
         let ticket_type = TicketType::find_by_id(&self.pool, ticket_type_id)
             .await?
             .ok_or_else(|| anyhow!("Ticket type not found"))?;
 
-        // Check if ticket type is active
+        if !ticket_type.is_free {
+            return Err(anyhow!("This ticket type is not free. Use the purchase endpoint instead."));
+        }
+
         if !ticket_type.is_active {
             return Err(anyhow!("This ticket type is no longer available"));
         }
 
-        // Check remaining tickets
         if let Some(remaining) = ticket_type.remaining {
             if remaining <= 0 {
                 return Err(anyhow!("No tickets remaining for this type"));
             }
         }
 
-        // Get the event
         let event = Event::find_by_id(&self.pool, ticket_type.event_id)
             .await?
             .ok_or_else(|| anyhow!("Event not found"))?;
 
-        // TEMPORAL VALIDATION: Check if event can sell tickets
+        if !event.can_sell_tickets() {
+            let effective_status = event.get_effective_status();
+            match effective_status.as_str() {
+                "ended" => {
+                    return Err(anyhow!(
+                        "Cannot claim tickets for this event as it has already ended on {}",
+                        event.end_time.format("%B %d, %Y at %H:%M UTC")
+                    ))
+                }
+                "cancelled" => return Err(anyhow!("This event has been cancelled")),
+                "draft" => return Err(anyhow!("This event is not yet available for ticket claims")),
+                "ongoing" => {
+                    return Err(anyhow!(
+                        "Ticket claims have closed. This event is currently ongoing (started at {})",
+                        event.start_time.format("%B %d, %Y at %H:%M UTC")
+                    ))
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "Tickets are not currently available for this event"
+                    ))
+                }
+            }
+        }
+
+        let user = User::find_by_id(&self.pool, user_id)
+            .await?
+            .ok_or_else(|| anyhow!("User not found"))?;
+
+        if let Some(remaining) = ticket_type.remaining {
+            if remaining <= 100 {
+                let existing_ticket = self.check_user_existing_free_ticket(user_id, event.id).await?;
+                if existing_ticket.is_some() {
+                    return Err(anyhow!("You already have a free ticket for this event"));
+                }
+            }
+        }
+
+        Ok((ticket_type, event, user))
+    }
+
+    async fn create_free_transaction_record<'a>(
+        &self,
+        tx: &mut SqlxTransaction<'a, Postgres>,
+        ticket_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Transaction> {
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+
+        let receipt_number = format!(
+            "FREE-{}-{}",
+            now.format("%Y%m%d"),
+            self.generate_random_receipt_suffix()
+        );
+
+        let transaction = sqlx::query_as!(
+            Transaction,
+            r#"
+            INSERT INTO transactions (
+                id, ticket_id, user_id, amount, currency, status, created_at, updated_at, receipt_number
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING *
+            "#,
+            id, 
+            ticket_id, 
+            user_id, 
+            BigDecimal::from(0), 
+            "FREE", 
+            "completed",
+            now, 
+            now, 
+            receipt_number
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(transaction)
+    }
+
+    async fn check_user_existing_free_ticket(&self, user_id: Uuid, event_id: Uuid) -> Result<Option<Uuid>> {
+        let result = sqlx::query!(
+            r#"
+            SELECT t.id
+            FROM tickets t
+            JOIN ticket_types tt ON t.ticket_type_id = tt.id
+            WHERE t.owner_id = $1 
+            AND tt.event_id = $2 
+            AND tt.is_free = true 
+            AND t.status = 'valid'
+            LIMIT 1
+            "#,
+            user_id,
+            event_id
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result.map(|row| row.id))
+    }
+
+    pub async fn validate_ticket_purchase(
+        &self,
+        ticket_type_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<(TicketType, Event, User)> {
+        let ticket_type = TicketType::find_by_id(&self.pool, ticket_type_id)
+            .await?
+            .ok_or_else(|| anyhow!("Ticket type not found"))?;
+
+        if ticket_type.is_free {
+            return Err(anyhow!("This ticket type is free. Use the claim endpoint instead."));
+        }
+
+        if !ticket_type.is_purchasable() {
+            return Err(anyhow!("This ticket type is not available for purchase"));
+        }
+
+
+        if !ticket_type.is_active {
+            return Err(anyhow!("This ticket type is no longer available"));
+        }
+
+        if let Some(remaining) = ticket_type.remaining {
+            if remaining <= 0 {
+                return Err(anyhow!("No tickets remaining for this type"));
+            }
+        }
+
+        let event = Event::find_by_id(&self.pool, ticket_type.event_id)
+            .await?
+            .ok_or_else(|| anyhow!("Event not found"))?;
+
         if !event.can_sell_tickets() {
             let effective_status = event.get_effective_status();
             match effective_status.as_str() {
@@ -129,28 +312,24 @@ impl TicketService {
             }
         }
 
-        // Get user
         let user = User::find_by_id(&self.pool, user_id)
             .await?
             .ok_or_else(|| anyhow!("User not found"))?;
 
-        // Check if user has valid wallet for payment
         if user.stellar_public_key.is_none() || user.stellar_secret_key_encrypted.is_none() {
             return Err(anyhow!(
-                "You need to set up a Stellar wallet before purchasing tickets"
+                "You need to set up a Stellar wallet before purchasing paid tickets"
             ));
         }
 
         Ok((ticket_type, event, user))
     }
 
-    /// Enhanced ticket verification with temporal validation
     pub async fn verify_ticket_with_temporal_check(&self, ticket_id: Uuid) -> Result<bool> {
         let ticket = Ticket::find_by_id(&self.pool, ticket_id)
             .await?
             .ok_or_else(|| anyhow!("Ticket not found"))?;
 
-        // Check basic ticket status
         if ticket.status != "valid" {
             info!(
                 "Ticket {} verification failed: status is {}",
@@ -159,7 +338,6 @@ impl TicketService {
             return Ok(false);
         }
 
-        // Get ticket type and event
         let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
             .await?
             .ok_or_else(|| anyhow!("Ticket type not found"))?;
@@ -168,7 +346,6 @@ impl TicketService {
             .await?
             .ok_or_else(|| anyhow!("Event not found"))?;
 
-        // TEMPORAL VALIDATION: Check if event is still valid
         if !event.is_valid() {
             let effective_status = event.get_effective_status();
             info!(
@@ -178,7 +355,6 @@ impl TicketService {
             return Ok(false);
         }
 
-        // Check if event has ended
         let now = Utc::now();
         if now >= event.end_time {
             info!(
@@ -219,7 +395,6 @@ impl TicketService {
             }
         }
 
-        // Check transaction status
         if let Some(transaction) = Transaction::find_by_ticket(&self.pool, ticket_id).await? {
             if transaction.status != "completed" {
                 info!(
@@ -234,65 +409,55 @@ impl TicketService {
         Ok(true)
     }
 
-    pub async fn purchase_ticket(
+     pub async fn purchase_ticket(
         &self,
         ticket_type_id: Uuid,
         user_id: Uuid,
     ) -> Result<(Ticket, Transaction)> {
-        // Use enhanced validation
         let (ticket_type, event, user) = self
             .validate_ticket_purchase(ticket_type_id, user_id)
             .await?;
 
-        // Update event status if needed before proceeding
         let updated_event = event.update_status_if_needed(&self.pool).await?;
 
-        // Double-check after status update
         if !updated_event.can_sell_tickets() {
             return Err(anyhow!(
                 "Event status changed - tickets are no longer available"
             ));
         }
 
-        // Proceed with existing purchase logic...
         let mut tx = self.pool.begin().await?;
 
-        // Reserve a ticket
         let updated_ticket_type = self
             .reserve_ticket_in_transaction(&mut tx, &ticket_type)
             .await?;
 
-        // 🔥 FIX: Use the service method, not model method
         let ticket = self
             .create_ticket_in_transaction(
                 &mut tx,
                 updated_ticket_type.id,
                 user_id,
-                None, // QR code will be generated later
+                None,
             )
             .await?;
 
-        // 🔥 FIX: Use the service method, not model method
         let transaction = self
             .create_transaction_in_transaction(
                 &mut tx,
                 ticket.id,
                 user_id,
-                ticket_type
-                    .price
-                    .clone()
-                    .unwrap_or_else(|| BigDecimal::from(0)),
-                &ticket_type.currency,
+                ticket_type.price.clone().unwrap(),
+                &ticket_type.currency.clone().unwrap(),
                 "pending",
             )
             .await?;
 
-        // Process payment
+        // Process payment via Stellar
         let tx_hash = self
             .process_payment(&user, &ticket_type, &transaction)
             .await?;
 
-        // 🔥 FIX: Use the service method to update transaction
+        // Update transaction with hash and mark completed
         let completed_transaction = self
             .update_transaction_hash_in_transaction(&mut tx, &transaction, &tx_hash)
             .await?;
@@ -304,7 +469,7 @@ impl TicketService {
         tx.commit().await?;
 
         info!(
-            "Ticket purchased successfully: ticket_id={}, transaction_id={}, tx_hash={}",
+            "Paid ticket purchased successfully: ticket_id={}, transaction_id={}, tx_hash={}",
             ticket.id, completed_transaction.id, tx_hash
         );
 
@@ -404,8 +569,9 @@ impl TicketService {
             event_id: row.event_id,
             name: row.name,
             description: row.description,
+            is_free: row.is_free,
             price: row.price,
-            currency: row.currency.expect("Currency should have a default value"),
+            currency: row.currency,
             total_supply: row.total_supply,
             remaining: row.remaining,
             is_active: row.is_active,
@@ -572,8 +738,9 @@ impl TicketService {
                         event_id: row.event_id,
                         name: row.name,
                         description: row.description,
+                        is_free: row.is_free,
                         price: row.price,
-                        currency: row.currency.expect("Currency should have a default value"),
+                        currency: row.currency,
                         total_supply: row.total_supply,
                         remaining: row.remaining,
                         is_active: row.is_active,
@@ -605,8 +772,9 @@ impl TicketService {
                     event_id: row.event_id,
                     name: row.name,
                     description: row.description,
+                    is_free: row.is_free,
                     price: row.price,
-                    currency: row.currency.expect("Currency should have a default value"),
+                    currency: row.currency,
                     total_supply: row.total_supply,
                     remaining: row.remaining,
                     is_active: row.is_active,

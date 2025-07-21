@@ -11,8 +11,9 @@ pub struct TicketType {
     pub event_id: Uuid,
     pub name: String,
     pub description: Option<String>,
-    pub price: Option<BigDecimal>, // None == free ticket
-    pub currency: String,
+    pub is_free: bool,
+    pub price: Option<BigDecimal>,
+    pub currency: Option<String>,
     pub total_supply: Option<i32>,
     pub remaining: Option<i32>,
     pub is_active: bool,
@@ -24,6 +25,7 @@ pub struct TicketType {
 pub struct CreateTicketTypeRequest {
     pub name: String,
     pub description: Option<String>,
+    pub is_free: bool,
     pub price: Option<BigDecimal>,
     pub currency: Option<String>,
     pub total_supply: Option<i32>,
@@ -38,22 +40,40 @@ impl TicketType {
         let id = Uuid::new_v4();
         let now = Utc::now();
 
+        if !ticket_type.is_free {
+            if ticket_type.price.is_none() {
+                return Err(anyhow::anyhow!("Price is required for paid tickets"));
+            }
+            if ticket_type.currency.is_none() {
+                return Err(anyhow::anyhow!("Currency is required for paid tickets"));
+            }
+        }
+
+        let (final_price, final_currency) = if ticket_type.is_free {
+            (None, None)
+        } else {
+            // For paid tickets, default currency to XLM if not provided
+            let currency = ticket_type.currency.unwrap_or_else(|| "XLM".to_string());
+            (ticket_type.price, Some(currency))
+        };
+
         let result = sqlx::query!(
             r#"
             INSERT INTO ticket_types (
-                id, event_id, name, description, price, currency, 
+                id, event_id, name, description, is_free, price, currency, 
                 total_supply, remaining, is_active, created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'XLM'), $7, $8, $9, $10, $11)
-            RETURNING id, event_id, name, description, price, currency, 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            RETURNING id, event_id, name, description, is_free, price, currency, 
                       total_supply, remaining, is_active, created_at, updated_at
             "#,
             id,
             event_id,
             ticket_type.name,
             ticket_type.description,
-            ticket_type.price,
-            ticket_type.currency,
+            ticket_type.is_free,
+            final_price,
+            final_currency,
             ticket_type.total_supply,
             ticket_type.total_supply,
             true,
@@ -63,16 +83,14 @@ impl TicketType {
         .fetch_one(pool)
         .await?;
 
-        // TODO: figure out a better way to handle this rather than nanually construct the TicketType from the query result
         Ok(TicketType {
             id: result.id,
             event_id: result.event_id,
             name: result.name,
             description: result.description,
+            is_free: result.is_free,
             price: result.price,
-            currency: result
-                .currency
-                .expect("Currency should have a default value"),
+            currency: result.currency,
             total_supply: result.total_supply,
             remaining: result.remaining,
             is_active: result.is_active,
@@ -81,35 +99,44 @@ impl TicketType {
         })
     }
 
+    pub fn is_claimable(&self) -> bool {
+        self.is_free && self.is_active
+    }
+
+    pub fn is_purchasable(&self) -> bool {
+        !self.is_free && self.is_active && self.price.is_some() && self.currency.is_some()
+    }
+
     pub async fn find_by_event(pool: &PgPool, event_id: Uuid) -> Result<Vec<Self>> {
         let results = sqlx::query!(
             r#"
-            SELECT id, event_id, name, description, price, currency, 
+            SELECT id, event_id, name, description, is_free, price, currency, 
                    total_supply, remaining, is_active, created_at, updated_at
-            FROM ticket_types WHERE event_id = $1
+            FROM ticket_types WHERE event_id = $1 AND is_active = true
+            ORDER BY is_free DESC, price ASC
             "#,
             event_id
         )
         .fetch_all(pool)
         .await?;
 
-        // Map query results to TicketType structs
-        let ticket_types = results
-            .into_iter()
-            .map(|r| TicketType {
-                id: r.id,
-                event_id: r.event_id,
-                name: r.name,
-                description: r.description,
-                price: r.price,
-                currency: r.currency.expect("Currency should have a default value"),
-                total_supply: r.total_supply,
-                remaining: r.remaining,
-                is_active: r.is_active,
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-            })
-            .collect();
+        let mut ticket_types = Vec::new();
+        for row in results {
+            ticket_types.push(TicketType {
+                id: row.id,
+                event_id: row.event_id,
+                name: row.name,
+                description: row.description,
+                is_free: row.is_free,
+                price: row.price,
+                currency: row.currency,
+                total_supply: row.total_supply,
+                remaining: row.remaining,
+                is_active: row.is_active,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+            });
+        }
 
         Ok(ticket_types)
     }
@@ -117,7 +144,7 @@ impl TicketType {
     pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
         let result = sqlx::query!(
             r#"
-            SELECT id, event_id, name, description, price, currency, 
+            SELECT id, event_id, name, description, is_free, price, currency, 
                    total_supply, remaining, is_active, created_at, updated_at
             FROM ticket_types WHERE id = $1
             "#,
@@ -126,24 +153,23 @@ impl TicketType {
         .fetch_optional(pool)
         .await?;
 
-        let ticket_type = match result {
-            Some(r) => Some(TicketType {
-                id: r.id,
-                event_id: r.event_id,
-                name: r.name,
-                description: r.description,
-                price: r.price,
-                currency: r.currency.expect("Currency should have a default value"),
-                total_supply: r.total_supply,
-                remaining: r.remaining,
-                is_active: r.is_active,
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-            }),
-            None => None,
-        };
-
-        Ok(ticket_type)
+        match result {
+            Some(row) => Ok(Some(TicketType {
+                id: row.id,
+                event_id: row.event_id,
+                name: row.name,
+                description: row.description,
+                is_free: row.is_free,
+                price: row.price,
+                currency: row.currency,
+                total_supply: row.total_supply,
+                remaining: row.remaining,
+                is_active: row.is_active,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+            })),
+            None => Ok(None),
+        }
     }
 
     pub async fn decrease_remaining(&self, pool: &PgPool) -> Result<Self> {
@@ -154,7 +180,7 @@ impl TicketType {
                     UPDATE ticket_types
                     SET remaining = remaining - 1, updated_at = $1
                     WHERE id = $2
-                    RETURNING id, event_id, name, description, price, currency, 
+                    RETURNING id, event_id, name, description, is_free, price, currency, 
                              total_supply, remaining, is_active, created_at, updated_at
                     "#,
                     Utc::now(),
@@ -168,10 +194,9 @@ impl TicketType {
                     event_id: result.event_id,
                     name: result.name,
                     description: result.description,
+                    is_free: result.is_free,
                     price: result.price,
-                    currency: result
-                        .currency
-                        .expect("Currency should have a default value"),
+                    currency: result.currency,
                     total_supply: result.total_supply,
                     remaining: result.remaining,
                     is_active: result.is_active,
@@ -193,7 +218,7 @@ impl TicketType {
                 UPDATE ticket_types
                 SET remaining = remaining + $1, updated_at = $2
                 WHERE id = $3
-                RETURNING id, event_id, name, description, price, currency, 
+                RETURNING id, event_id, name, description, is_free, price, currency, 
                          total_supply, remaining, is_active, created_at, updated_at
                 "#,
                 amount,
@@ -208,10 +233,9 @@ impl TicketType {
                 event_id: result.event_id,
                 name: result.name,
                 description: result.description,
+                is_free: result.is_free,
                 price: result.price,
-                currency: result
-                    .currency
-                    .expect("Currency should have a default value"),
+                currency: result.currency,
                 total_supply: result.total_supply,
                 remaining: result.remaining,
                 is_active: result.is_active,
@@ -230,7 +254,7 @@ impl TicketType {
             UPDATE ticket_types
             SET is_active = $1, updated_at = $2
             WHERE id = $3
-            RETURNING id, event_id, name, description, price, currency, 
+            RETURNING id, event_id, name, description, is_free, price, currency, 
                      total_supply, remaining, is_active, created_at, updated_at
             "#,
             is_active,
@@ -245,10 +269,9 @@ impl TicketType {
             event_id: result.event_id,
             name: result.name,
             description: result.description,
+            is_free: result.is_free,
             price: result.price,
-            currency: result
-                .currency
-                .expect("Currency should have a default value"),
+            currency: result.currency,
             total_supply: result.total_supply,
             remaining: result.remaining,
             is_active: result.is_active,
@@ -264,15 +287,19 @@ impl TicketType {
 
         match self.remaining {
             Some(remaining) => remaining > 0,
-            None => true, // no remaining count means unlimited tickets
+            None => true,
         }
     }
 
-    // get formatted price
     pub fn formatted_price(&self) -> String {
-        match &self.price {
-            Some(price) => format!("{} {}", price, self.currency),
-            None => "Free".to_string(),
+        if self.is_free {
+            "Free".to_string()
+        } else {
+            match (&self.price, &self.currency) {
+                (Some(price), Some(currency)) => format!("{} {}", price, currency),
+                (Some(price), None) => format!("{}", price),
+                (None, _) => "Free".to_string(),
+            }
         }
     }
 }
@@ -389,6 +416,7 @@ mod tests {
         let create_request = CreateTicketTypeRequest {
             name: format!("Test Ticket {}", suffix),
             description: Some(format!("Description for {}", suffix)),
+            is_free: true,
             price: Some(BigDecimal::from_str("50.00").unwrap()),
             currency: Some("XLM".to_string()),
             total_supply: Some(100),
@@ -432,6 +460,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "VIP Ticket".to_string(),
                 description: Some("Premium access with perks".to_string()),
+                is_free: false,
                 price: Some(BigDecimal::from_str("100.50").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: Some(50),
@@ -453,7 +482,7 @@ mod tests {
                 ticket_type.price,
                 Some(BigDecimal::from_str("100.50").unwrap())
             );
-            assert_eq!(ticket_type.currency, "XLM");
+            assert_eq!(ticket_type.currency, Some("XLM".to_string()));
             assert_eq!(ticket_type.total_supply, Some(50));
             assert_eq!(ticket_type.remaining, Some(50)); // Should equal total_supply initially
             assert!(ticket_type.is_active, "New ticket type should be active");
@@ -472,7 +501,8 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "General Admission".to_string(),
                 description: Some("Free entry to the event".to_string()),
-                price: None, // Free ticket
+                is_free: true,
+                price: None,
                 currency: None,
                 total_supply: Some(200),
             };
@@ -487,7 +517,7 @@ mod tests {
                 ticket_type.price.is_none(),
                 "Free ticket should have no price"
             );
-            assert_eq!(ticket_type.currency, "XLM"); // Should default to XLM
+            assert_eq!(ticket_type.currency, Some("XLM".to_string())); // Should default to XLM
             assert_eq!(ticket_type.total_supply, Some(200));
             assert_eq!(ticket_type.remaining, Some(200));
 
@@ -505,9 +535,10 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Unlimited Access".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("25.00").unwrap()),
                 currency: Some("XLM".to_string()),
-                total_supply: None, // Unlimited
+                total_supply: None,
             };
 
             let result = TicketType::create(&pool, event_id, create_request).await;
@@ -541,6 +572,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Orphan Ticket".to_string(),
                 description: None,
+                is_free: true,
                 price: None,
                 currency: None,
                 total_supply: Some(10),
@@ -560,6 +592,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "".to_string(),
                 description: None,
+                is_free: true,
                 price: None,
                 currency: None,
                 total_supply: Some(10),
@@ -584,6 +617,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Negative Price Ticket".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("-10.00").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: Some(10),
@@ -609,6 +643,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Zero Supply Ticket".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("10.00").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: Some(0),
@@ -798,6 +833,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Zero Supply Ticket".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("10.00").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: Some(0),
@@ -828,6 +864,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Unlimited Ticket".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("10.00").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: None, // Unlimited
@@ -883,6 +920,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Unlimited Ticket".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("10.00").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: None,
@@ -1042,6 +1080,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Sold Out Ticket".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("10.00").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: Some(0),
@@ -1070,6 +1109,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Unlimited Ticket".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("10.00").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: None,
@@ -1114,6 +1154,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Free Ticket".to_string(),
                 description: None,
+                is_free: true,
                 price: None,
                 currency: None,
                 total_supply: Some(100),
@@ -1139,6 +1180,7 @@ mod tests {
             let json = r#"{
                 "name": "VIP Ticket",
                 "description": "Premium access",
+                is_free: false,
                 "price": "100.50",
                 "currency": "XLM",
                 "total_supply": 50
@@ -1148,6 +1190,7 @@ mod tests {
 
             assert_eq!(request.name, "VIP Ticket");
             assert_eq!(request.description, Some("Premium access".to_string()));
+            assert_eq!(request.is_free, false);
             assert_eq!(request.price, Some(BigDecimal::from_str("100.50").unwrap()));
             assert_eq!(request.currency, Some("XLM".to_string()));
             assert_eq!(request.total_supply, Some(50));
@@ -1213,6 +1256,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Expensive Ticket".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("999999999.99999999").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: Some(1),
@@ -1238,6 +1282,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Mass Ticket".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("1.00").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: Some(2_000_000_000), // 2 billion tickets
@@ -1263,6 +1308,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "票券 🎫 Билет".to_string(),
                 description: Some("多言語対応 multilingual 🌍".to_string()),
+                is_free: false,
                 price: Some(BigDecimal::from_str("25.50").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: Some(50),
@@ -1292,6 +1338,7 @@ mod tests {
             let create_request1 = CreateTicketTypeRequest {
                 name: "Concurrent Ticket 1".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("10.00").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: Some(50),
@@ -1300,6 +1347,7 @@ mod tests {
             let create_request2 = CreateTicketTypeRequest {
                 name: "Concurrent Ticket 2".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("20.00").unwrap()),
                 currency: Some("XLM".to_string()),
                 total_supply: Some(50),
@@ -1336,6 +1384,7 @@ mod tests {
             let create_request = CreateTicketTypeRequest {
                 name: "Precise Price Ticket".to_string(),
                 description: None,
+                is_free: false,
                 price: Some(BigDecimal::from_str("12.12345678").unwrap()), // 8 decimal places
                 currency: Some("XLM".to_string()),
                 total_supply: Some(10),
