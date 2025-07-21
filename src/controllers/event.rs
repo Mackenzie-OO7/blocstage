@@ -1,5 +1,9 @@
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::event::{CreateEventRequest, Event, SearchEventsRequest, UpdateEventRequest};
+use crate::controllers::admin_filters::{
+    AdminTicketFilters, AdminEventFilters, PaginatedTicketsResponse, 
+    PaginatedEventsResponse, AdminTicketView, AdminEventView, PageInfo
+};
 use actix_web::{web, HttpResponse, Responder};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
