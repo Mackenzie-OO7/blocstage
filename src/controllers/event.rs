@@ -1,13 +1,14 @@
+use crate::controllers::admin_filters::{
+    AdminEventFilters, AdminEventView, PageInfo, PaginatedEventsResponse, PaginatedTicketsResponse,
+};
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::event::{CreateEventRequest, Event, SearchEventsRequest, UpdateEventRequest};
-use crate::controllers::admin_filters::{
-    AdminTicketFilters, AdminEventFilters, PaginatedTicketsResponse, 
-    PaginatedEventsResponse, AdminTicketView, AdminEventView, PageInfo
-};
 use actix_web::{web, HttpResponse, Responder};
+use bigdecimal::BigDecimal;
+use chrono::{DateTime, Utc};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
@@ -16,7 +17,7 @@ struct ErrorResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct PaginationParams {
+pub struct PaginationParams {
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -226,7 +227,7 @@ pub async fn get_all_events(
 pub async fn get_events_by_organizer(
     pool: web::Data<PgPool>,
     user: AuthenticatedUser,
-    _query: web::Query<PaginationParams>, // not used yet, but ready for pagination
+    _query: web::Query<PaginationParams>,
 ) -> impl Responder {
     match Event::find_by_organizer(&pool, user.id).await {
         Ok(events) => HttpResponse::Ok().json(events),
@@ -302,40 +303,6 @@ async fn get_event_stats(pool: &PgPool, event_id: Uuid) -> Result<serde_json::Va
 }
 
 // ADMIN ENDPOINTS
-pub async fn admin_get_all_events(
-    pool: web::Data<PgPool>,
-    user: AuthenticatedUser,
-    query: web::Query<PaginationParams>,
-) -> impl Responder {
-    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
-        Ok(user) => user,
-        Err(response) => return response,
-    };
-
-    let limit = query.limit.unwrap_or(50);
-    let offset = query.offset.unwrap_or(0);
-
-    match sqlx::query_as!(
-        Event,
-        "SELECT * FROM events ORDER BY created_at DESC LIMIT $1 OFFSET $2",
-        limit,
-        offset
-    )
-    .fetch_all(&**pool)
-    .await
-    {
-        Ok(events) => {
-            info!("Admin {} accessed all events", user.id);
-            HttpResponse::Ok().json(events)
-        }
-        Err(e) => {
-            error!("Failed to fetch all events for admin: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch events".to_string(),
-            })
-        }
-    }
-}
 
 pub async fn admin_cancel_any_event(
     pool: web::Data<PgPool>,
@@ -439,27 +406,289 @@ pub async fn admin_get_event_details(
     }))
 }
 
+pub async fn admin_get_all_events(
+    pool: web::Data<PgPool>,
+    query: web::Query<AdminEventFilters>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+
+    let mut filters = query.into_inner();
+    filters.validate();
+
+    match get_filtered_events(&pool, &filters).await {
+        Ok(response) => {
+            info!(
+                "Admin {} accessed filtered events (total: {}, page: {})",
+                user.id, response.total_count, response.page_info.current_page
+            );
+            HttpResponse::Ok().json(response)
+        }
+        Err(e) => {
+            error!("Failed to fetch filtered events for admin: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch events".to_string(),
+            })
+        }
+    }
+}
+
+async fn get_filtered_events(
+    pool: &PgPool,
+    filters: &AdminEventFilters,
+) -> Result<PaginatedEventsResponse, sqlx::Error> {
+    let limit = filters.limit.unwrap();
+    let offset = filters.offset.unwrap();
+
+    let base_query = r#"
+        SELECT 
+            e.id as event_id,
+            e.title,
+            e.description,
+            e.location,
+            e.category,
+            e.status,
+            e.start_time,
+            e.end_time,
+            e.created_at,
+            e.updated_at,
+            
+            u.id as organizer_id,
+            u.email as organizer_email,
+            u.username as organizer_username,
+            
+            COALESCE(stats.total_ticket_types, 0) as total_ticket_types,
+            COALESCE(stats.total_tickets_sold, 0) as total_tickets_sold,
+            COALESCE(stats.total_revenue, 0) as total_revenue,
+            COALESCE(stats.tickets_remaining, 0) as tickets_remaining
+            
+        FROM events e
+        JOIN users u ON e.organizer_id = u.id
+        LEFT JOIN (
+            SELECT 
+                tt.event_id,
+                COUNT(DISTINCT tt.id) as total_ticket_types,
+                COUNT(DISTINCT t.id) as total_tickets_sold,
+                SUM(CASE WHEN tr.status = 'completed' AND tr.amount > 0 THEN tr.amount ELSE 0 END) as total_revenue,
+                SUM(COALESCE(tt.remaining, 0)) as tickets_remaining
+            FROM ticket_types tt
+            LEFT JOIN tickets t ON tt.id = t.ticket_type_id AND t.status = 'valid'
+            LEFT JOIN transactions tr ON t.id = tr.ticket_id
+            GROUP BY tt.event_id
+        ) stats ON e.id = stats.event_id
+    "#;
+
+    let location_pattern = filters.location.as_ref().map(|loc| format!("%{}%", loc));
+    let search_pattern = filters
+        .search
+        .as_ref()
+        .map(|search| format!("%{}%", search));
+
+    let mut where_conditions = Vec::new();
+    let mut param_count = 1;
+
+    if filters.status.is_some() {
+        where_conditions.push(format!("e.status = ${}", param_count));
+        param_count += 1;
+    }
+
+    if filters.category.is_some() {
+        where_conditions.push(format!("e.category = ${}", param_count));
+        param_count += 1;
+    }
+
+    if filters.location.is_some() {
+        where_conditions.push(format!("e.location ILIKE ${}", param_count));
+        param_count += 1;
+    }
+
+    if filters.organizer_id.is_some() {
+        where_conditions.push(format!("e.organizer_id = ${}", param_count));
+        param_count += 1;
+    }
+
+    if filters.search.is_some() {
+        where_conditions.push(format!(
+            "(e.title ILIKE ${} OR e.description ILIKE ${})",
+            param_count, param_count
+        ));
+        param_count += 1;
+    }
+
+    if filters.start_date.is_some() {
+        where_conditions.push(format!("e.start_time >= ${}", param_count));
+        param_count += 1;
+    }
+
+    if filters.end_date.is_some() {
+        where_conditions.push(format!("e.end_time <= ${}", param_count));
+        param_count += 1;
+    }
+
+    let where_clause = if where_conditions.is_empty() {
+        "".to_string()
+    } else {
+        format!("WHERE {}", where_conditions.join(" AND "))
+    };
+
+    let sort_column = match filters.sort_by.as_ref().unwrap().as_str() {
+        "start_time" => "e.start_time",
+        "title" => "e.title",
+        "updated_at" => "e.updated_at",
+        "status" => "e.status",
+        "category" => "e.category",
+        _ => "e.created_at",
+    };
+
+    let sort_order = filters.sort_order.as_ref().unwrap();
+
+    let final_query = format!(
+        "{} {} ORDER BY {} {} LIMIT ${} OFFSET ${}",
+        base_query,
+        where_clause,
+        sort_column,
+        sort_order,
+        param_count,
+        param_count + 1
+    );
+
+    let count_query = format!(
+        "SELECT COUNT(*) as total FROM events e 
+         JOIN users u ON e.organizer_id = u.id {}",
+        where_clause
+    );
+
+    let mut main_query = sqlx::query(&final_query);
+    let mut count_query_builder = sqlx::query_scalar::<_, i64>(&count_query);
+
+    if let Some(status) = &filters.status {
+        main_query = main_query.bind(status);
+        count_query_builder = count_query_builder.bind(status);
+    }
+
+    if let Some(category) = &filters.category {
+        main_query = main_query.bind(category);
+        count_query_builder = count_query_builder.bind(category);
+    }
+
+    if let Some(_) = &filters.location {
+        if let Some(pattern) = &location_pattern {
+            main_query = main_query.bind(pattern);
+            count_query_builder = count_query_builder.bind(pattern);
+        }
+    }
+
+    if let Some(organizer_id) = &filters.organizer_id {
+        main_query = main_query.bind(organizer_id);
+        count_query_builder = count_query_builder.bind(organizer_id);
+    }
+
+    if let Some(_) = &filters.search {
+        if let Some(pattern) = &search_pattern {
+            main_query = main_query.bind(pattern);
+            count_query_builder = count_query_builder.bind(pattern);
+        }
+    }
+
+    if let Some(start_date) = &filters.start_date {
+        main_query = main_query.bind(start_date);
+        count_query_builder = count_query_builder.bind(start_date);
+    }
+
+    if let Some(end_date) = &filters.end_date {
+        main_query = main_query.bind(end_date);
+        count_query_builder = count_query_builder.bind(end_date);
+    }
+
+    main_query = main_query.bind(limit).bind(offset);
+
+    let total_count = count_query_builder.fetch_one(pool).await?;
+    let rows = main_query.fetch_all(pool).await?;
+
+    let mut events = Vec::new();
+    for row in rows {
+        let status: String = row.get("status");
+        let start_time: DateTime<Utc> = row.get("start_time");
+        let end_time: DateTime<Utc> = row.get("end_time");
+        let now = Utc::now();
+
+        let effective_status = match status.as_str() {
+            "cancelled" => "cancelled".to_string(),
+            "draft" => "draft".to_string(),
+            _ => {
+                if now >= end_time {
+                    "ended".to_string()
+                } else if now >= start_time {
+                    "ongoing".to_string()
+                } else {
+                    "scheduled".to_string()
+                }
+            }
+        };
+
+        events.push(AdminEventView {
+            event_id: row.get("event_id"),
+            title: row.get("title"),
+            description: row.get("description"),
+            location: row.get("location"),
+            category: row.get("category"),
+            status: row.get("status"),
+            effective_status,
+            start_time: row.get("start_time"),
+            end_time: row.get("end_time"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+
+            organizer_id: row.get("organizer_id"),
+            organizer_email: row.get("organizer_email"),
+            organizer_username: row.get("organizer_username"),
+
+            total_ticket_types: row.get("total_ticket_types"),
+            total_tickets_sold: row.get("total_tickets_sold"),
+            total_revenue: row
+                .get::<Option<BigDecimal>, _>("total_revenue")
+                .map(|r| r.to_string()),
+            tickets_remaining: row.get("tickets_remaining"),
+        });
+    }
+
+    let total_pages = (total_count + limit - 1) / limit;
+    let current_page = (offset / limit) + 1;
+
+    let page_info = PageInfo {
+        limit,
+        offset,
+        total_pages,
+        current_page,
+        has_next: current_page < total_pages,
+        has_previous: current_page > 1,
+    };
+
+    Ok(PaginatedEventsResponse {
+        events,
+        total_count,
+        page_info,
+    })
+}
+
 // ROUTE CONFIGURATION
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/events")
-            // Public specific routes
-            .route("/search", web::get().to(search_events)) // ← MUST be before /{event_id}
-            // Authenticated specific routes (organizers)
-            .route("/organizer", web::get().to(get_events_by_organizer)) // ← MUST be before /{event_id}
-            // PUBLIC ROUTE
+            .route("/search", web::get().to(search_events))
+            .route("/organizer", web::get().to(get_events_by_organizer))
             .route("", web::get().to(get_all_events))
-            // AUTHENTICATED ROUTES 
             .route("", web::post().to(create_event))
-            // GENERIC PARAMETERIZED ROUTES COME LAST
-            .route("/{event_id}", web::get().to(get_event)) // ← This MUST come after specific routes
+            .route("/{event_id}", web::get().to(get_event))
             .route("/{event_id}", web::put().to(update_event))
             .route("/{event_id}/cancel", web::post().to(cancel_event))
             .route("/{event_id}/analytics", web::get().to(get_event_analytics)),
     )
     .service(
         web::scope("/admin/events")
-            // Admin-only event ops
             .route("", web::get().to(admin_get_all_events))
             .route("/{event_id}", web::get().to(admin_get_event_details))
             .route("/{event_id}/cancel", web::post().to(admin_cancel_any_event)),

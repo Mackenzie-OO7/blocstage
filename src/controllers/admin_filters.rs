@@ -5,65 +5,36 @@ use uuid::Uuid;
 #[derive(Debug, Deserialize)]
 pub struct AdminTicketFilters {
     pub status: Option<String>,
-    
-    // Entity filtering
     pub event_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
     pub organizer_id: Option<Uuid>,
-    
-    // Date filtering
     pub purchased_after: Option<DateTime<Utc>>,
     pub purchased_before: Option<DateTime<Utc>>,
-    pub event_start_after: Option<DateTime<Utc>>,
-    pub event_start_before: Option<DateTime<Utc>>,
-    
-    // Search
+    pub transaction_status: Option<String>,
     pub search: Option<String>, // Search in event title, user email, ticket type name
-    
-    // Ticket type filtering
     pub is_free: Option<bool>,
-    pub currency: Option<String>, // Filter by currency (XLM, USD, etc.)
-    
-    // Pagination
-    pub limit: Option<i64>, // Default: 50, Max: 500
+    pub currency: Option<String>, // XLM, USDC, NGN.)
+    pub limit: Option<i64>,
     pub offset: Option<i64>,
-    
-    // Sorting
     pub sort_by: Option<String>, // "created_at", "updated_at", "event_start", "amount"
     pub sort_order: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AdminEventFilters {
-    // Status filtering
     pub status: Option<String>,
-    pub effective_status: Option<String>,
-    
-    // Category filtering
     pub category: Option<String>,
     pub location: Option<String>, //(partial match)
-    
-    // Date filtering
-    pub start_after: Option<DateTime<Utc>>,
-    pub start_before: Option<DateTime<Utc>>,
+    pub start_date: Option<DateTime<Utc>>,
+    pub end_date: Option<DateTime<Utc>>,
     pub created_after: Option<DateTime<Utc>>,
     pub created_before: Option<DateTime<Utc>>,
-    
-    // Search
     pub search: Option<String>,
     pub organizer_email: Option<String>,
-    
-    // Organizer filtering
     pub organizer_id: Option<Uuid>,
-
-    // Tags filtering
     pub tags: Option<Vec<String>>,
-    
-    // Pagination
     pub limit: Option<i64>,
     pub offset: Option<i64>,
-    
-    // Sorting
     pub sort_by: Option<String>,
     pub sort_order: Option<String>,
 }
@@ -220,7 +191,7 @@ pub struct AdminEventView {
     pub organizer_email: String,
     pub organizer_username: String,
     
-    // Statistics
+    // Stats
     pub total_ticket_types: i64,
     pub total_tickets_sold: i64,
     pub total_revenue: Option<String>,

@@ -1641,7 +1641,6 @@ mod tests {
                 start_time: now + Duration::days(1),
                 end_time: now + Duration::days(1) + Duration::hours(2),
                 category: Some("技术".to_string()),
-                // ✅ FIXED: Use Vec<String>
                 tags: Some(vec![
                     "技术".to_string(),
                     "conference".to_string(),
