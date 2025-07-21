@@ -15,6 +15,8 @@ use std::{env, time::Duration};
 use log::{info, error, warn};
 use serde_json::json;
 
+use crate::services::scheduler::SchedulerService;
+
 use blocstage::controllers::configure_routes;
 use blocstage::api_info;
 
@@ -102,6 +104,11 @@ async fn main() -> std::io::Result<()> {
             std::process::exit(1);
         }
     }
+
+    info!("Initializing scheduled tasks...");
+    let scheduler = SchedulerService::new(db_pool.clone());
+    scheduler.start_scheduled_tasks().await;
+    scheduler.start_cleanup_tasks().await;
     
     // rate limiting (100 requests per minute per IP)
     let governor_conf = GovernorConfigBuilder::default()
