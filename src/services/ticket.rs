@@ -1,3 +1,4 @@
+// everything tickets: purchase, verification, transfers
 // TODO: finalize on AWS or Digital Ocean
 use crate::models::{
     event::Event, ticket::Ticket, ticket_type::TicketType, transaction::Transaction, user::User,
@@ -1188,188 +1189,88 @@ impl TicketService {
         Ok(updated_ticket)
     }
 
-    // pub async fn cancel_ticket(&self, ticket_id: Uuid, user_id: Uuid) -> Result<Ticket> {
-    //     let mut tx = self.pool.begin().await?;
-
-    //     let row = sqlx::query!("SELECT * FROM tickets WHERE id = $1 FOR UPDATE", ticket_id)
-    //         .fetch_optional(&mut *tx)
-    //         .await?
-    //         .ok_or_else(|| anyhow!("Ticket not found"))?;
-
-    //     let ticket = Ticket {
-    //         id: row.id,
-    //         ticket_type_id: row.ticket_type_id,
-    //         owner_id: row.owner_id,
-    //         status: row.status,
-    //         qr_code: row.qr_code,
-    //         nft_identifier: row.nft_identifier,
-    //         created_at: row.created_at,
-    //         updated_at: row.updated_at,
-    //         checked_in_at: row.checked_in_at,
-    //         checked_in_by: row.checked_in_by,
-    //         pdf_url: row.pdf_url,
-    //     };
-
-    //     if ticket.owner_id != user_id {
-    //         return Err(anyhow!("You don't own this ticket"));
-    //     }
-
-    //     if ticket.status != "valid" {
-    //         return Err(anyhow!(
-    //             "Ticket cannot be cancelled (status: {})",
-    //             ticket.status
-    //         ));
-    //     }
-
-    //     let updated_ticket = self
-    //         .update_ticket_status_in_transaction(&mut tx, &ticket, "cancelled")
-    //         .await?;
-
-    //     let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
-    //         .await?
-    //         .ok_or_else(|| anyhow!("Ticket type not found"))?;
-
-    //     if ticket_type.remaining.is_some() {
-    //         ticket_type.increase_remaining(&self.pool, 1).await?;
-    //     }
-
-    //     let transaction = Transaction::find_by_ticket(&self.pool, ticket_id).await?;
-    //     if let Some(tx_record) = transaction {
-    //         if tx_record.status == "completed" && tx_record.amount.is_positive() {
-    //             let refund_secret_key = env::var("PLATFORM_REFUND_SECRET_KEY")
-    //                 .map_err(|_| anyhow!("Refund account not configured"))?;
-
-    //             let user = User::find_by_id(&self.pool, user_id)
-    //                 .await?
-    //                 .ok_or_else(|| anyhow!("User not found"))?;
-
-    //             let user_public_key = user
-    //                 .stellar_public_key
-    //                 .clone()
-    //                 .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
-
-    //             let refund_hash = self
-    //                 .stellar
-    //                 .process_refund(
-    //                     &refund_secret_key,
-    //                     &user_public_key,
-    //                     &tx_record.amount.to_string(),
-    //                 )
-    //                 .await?;
-
-    //             tx_record
-    //                 .process_refund(&self.pool, None, Some("Ticket cancelled".to_string()))
-    //                 .await?;
-    //             tx_record
-    //                 .update_refund_hash(&self.pool, &refund_hash)
-    //                 .await?;
-    //         }
-    //     }
-
-    //     tx.commit().await?;
-
-    //     Ok(updated_ticket)
-    // }
-
-    pub async fn admin_cancel_ticket(
-        &self,
-        ticket_id: Uuid,
-        admin_id: Uuid,
-        reason: String,
-    ) -> Result<Ticket> {
+    pub async fn cancel_ticket(&self, ticket_id: Uuid, user_id: Uuid) -> Result<Ticket> {
         let mut tx = self.pool.begin().await?;
 
-        // Get the ticket with lock to prevent concurrent modifications
-        let ticket = sqlx::query_as!(
-            Ticket,
-            "SELECT * FROM tickets WHERE id = $1 FOR UPDATE",
-            ticket_id
-        )
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| anyhow!("Ticket not found"))?;
+        let row = sqlx::query!("SELECT * FROM tickets WHERE id = $1 FOR UPDATE", ticket_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| anyhow!("Ticket not found"))?;
 
-        // Check if ticket can be cancelled
-        if ticket.status != "valid" {
-            return Err(anyhow!("Ticket cannot be cancelled. Current status: {}", ticket.status));
+        let ticket = Ticket {
+            id: row.id,
+            ticket_type_id: row.ticket_type_id,
+            owner_id: row.owner_id,
+            status: row.status,
+            qr_code: row.qr_code,
+            nft_identifier: row.nft_identifier,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            checked_in_at: row.checked_in_at,
+            checked_in_by: row.checked_in_by,
+            pdf_url: row.pdf_url,
+        };
+
+        if ticket.owner_id != user_id {
+            return Err(anyhow!("You don't own this ticket"));
         }
 
-        // Get ticket type info for restoring inventory
+        if ticket.status != "valid" {
+            return Err(anyhow!(
+                "Ticket cannot be cancelled (status: {})",
+                ticket.status
+            ));
+        }
+
+        let updated_ticket = self
+            .update_ticket_status_in_transaction(&mut tx, &ticket, "cancelled")
+            .await?;
+
         let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
             .await?
             .ok_or_else(|| anyhow!("Ticket type not found"))?;
 
-        // Update ticket status to cancelled
-        let cancelled_ticket = sqlx::query_as!(
-            Ticket,
-            r#"
-            UPDATE tickets 
-            SET status = 'cancelled', updated_at = $1 
-            WHERE id = $2
-            RETURNING *
-            "#,
-            Utc::now(),
-            ticket_id
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-
-        // Update any related transaction status (if exists)
-        sqlx::query!(
-            r#"
-            UPDATE transactions 
-            SET status = 'cancelled', updated_at = $1 
-            WHERE ticket_id = $2
-            "#,
-            Utc::now(),
-            ticket_id
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        // Restore ticket inventory (increase remaining count)
-        if ticket_type.total_supply.is_some() {
-            sqlx::query!(
-                r#"
-                UPDATE ticket_types 
-                SET remaining = remaining + 1, updated_at = $1 
-                WHERE id = $2
-                "#,
-                Utc::now(),
-                ticket_type.id
-            )
-            .execute(&mut *tx)
-            .await?;
+        if ticket_type.remaining.is_some() {
+            ticket_type.increase_remaining(&self.pool, 1).await?;
         }
 
-        // Log the admin cancellation
-        sqlx::query!(
-            r#"
-            INSERT INTO ticket_admin_actions (
-                id, ticket_id, admin_id, action_type, reason, created_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6)
-            "#,
-            Uuid::new_v4(),
-            ticket_id,
-            admin_id,
-            "cancelled",
-            reason,
-            Utc::now()
-        )
-        .execute(&mut *tx)
-        .await?;
+        let transaction = Transaction::find_by_ticket(&self.pool, ticket_id).await?;
+        if let Some(tx_record) = transaction {
+            if tx_record.status == "completed" && tx_record.amount.is_positive() {
+                let refund_secret_key = env::var("PLATFORM_REFUND_SECRET_KEY")
+                    .map_err(|_| anyhow!("Refund account not configured"))?;
+
+                let user = User::find_by_id(&self.pool, user_id)
+                    .await?
+                    .ok_or_else(|| anyhow!("User not found"))?;
+
+                let user_public_key = user
+                    .stellar_public_key
+                    .clone()
+                    .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
+
+                let refund_hash = self
+                    .stellar
+                    .process_refund(
+                        &refund_secret_key,
+                        &user_public_key,
+                        &tx_record.amount.to_string(),
+                    )
+                    .await?;
+
+                tx_record
+                    .process_refund(&self.pool, None, Some("Ticket cancelled".to_string()))
+                    .await?;
+                tx_record
+                    .update_refund_hash(&self.pool, &refund_hash)
+                    .await?;
+            }
+        }
 
         tx.commit().await?;
 
-        info!(
-            "Admin {} cancelled ticket {} with reason: {}",
-            admin_id, ticket_id, reason
-        );
-
-        Ok(cancelled_ticket)
+        Ok(updated_ticket)
     }
-
 
     pub async fn get_user_tickets(
         &self,
@@ -2117,67 +2018,67 @@ mod tests {
         }
     }
 
-    // mod ticket_cancellation {
-    //     use super::*;
-    
-        // #[tokio::test]
-        // async fn test_cancel_ticket_success() {
-        //     let pool = setup_test_db().await;
-        //     let service = TicketService::new(pool.clone())
-        //         .await
-        //         .expect("Failed to create service");
+    mod ticket_cancellation {
+        use super::*;
 
-        //     let organizer_id = create_test_user(&pool, "organizer").await;
-        //     let user_id = create_test_user(&pool, "buyer").await;
-        //     add_stellar_keys_to_user(&pool, user_id).await;
+        #[tokio::test]
+        async fn test_cancel_ticket_success() {
+            let pool = setup_test_db().await;
+            let service = TicketService::new(pool.clone())
+                .await
+                .expect("Failed to create service");
 
-        //     let event_id = create_test_event(&pool, organizer_id, "cancel").await;
-        //     let ticket_type_id =
-        //         create_test_ticket_type(&pool, event_id, "cancel", None, Some(10)).await;
+            let organizer_id = create_test_user(&pool, "organizer").await;
+            let user_id = create_test_user(&pool, "buyer").await;
+            add_stellar_keys_to_user(&pool, user_id).await;
 
-        //     let (ticket,_transaction) = service
-        //         .purchase_ticket(ticket_type_id, user_id)
-        //         .await
-        //         .expect("Ticket purchase should succeed");
+            let event_id = create_test_event(&pool, organizer_id, "cancel").await;
+            let ticket_type_id =
+                create_test_ticket_type(&pool, event_id, "cancel", None, Some(10)).await;
 
-        //     let result = service.cancel_ticket(ticket.id, user_id).await;
+            let (ticket,_transaction) = service
+                .purchase_ticket(ticket_type_id, user_id)
+                .await
+                .expect("Ticket purchase should succeed");
 
-        //     // Cancellation might succeed or fail depending on payment/refund processing
-        //     // In test environment, this is acceptable behavior
-        //     match result {
-        //         Ok(cancelled_ticket) => {
-        //             assert_eq!(cancelled_ticket.status, "cancelled");
-        //         }
-        //         Err(e) => {
-        //             // Expected if refund processing fails in test environment
-        //             println!("Ticket cancellation failed as expected in test: {}", e);
-        //         }
-        //     }
+            let result = service.cancel_ticket(ticket.id, user_id).await;
 
-        //     cleanup_test_ticket(&pool, ticket.id).await;
-        //     cleanup_test_ticket_type(&pool, ticket_type_id).await;
-        //     cleanup_test_event(&pool, event_id).await;
-        //     cleanup_test_user(&pool, user_id).await;
-        //     cleanup_test_user(&pool, organizer_id).await;
-        // }
+            // Cancellation might succeed or fail depending on payment/refund processing
+            // In test environment, this is acceptable behavior
+            match result {
+                Ok(cancelled_ticket) => {
+                    assert_eq!(cancelled_ticket.status, "cancelled");
+                }
+                Err(e) => {
+                    // Expected if refund processing fails in test environment
+                    println!("Ticket cancellation failed as expected in test: {}", e);
+                }
+            }
 
-    //     #[tokio::test]
-    //     async fn test_cancel_nonexistent_ticket() {
-    //         let pool = setup_test_db().await;
-    //         let service = TicketService::new(pool.clone())
-    //             .await
-    //             .expect("Failed to create service");
+            cleanup_test_ticket(&pool, ticket.id).await;
+            cleanup_test_ticket_type(&pool, ticket_type_id).await;
+            cleanup_test_event(&pool, event_id).await;
+            cleanup_test_user(&pool, user_id).await;
+            cleanup_test_user(&pool, organizer_id).await;
+        }
 
-    //         let user_id = create_test_user(&pool, "user").await;
-    //         let nonexistent_ticket_id = Uuid::new_v4();
+        #[tokio::test]
+        async fn test_cancel_nonexistent_ticket() {
+            let pool = setup_test_db().await;
+            let service = TicketService::new(pool.clone())
+                .await
+                .expect("Failed to create service");
 
-    //         let result = service.cancel_ticket(nonexistent_ticket_id, user_id).await;
-    //         assert!(result.is_err(), "Should fail for nonexistent ticket");
-    //         assert!(result.unwrap_err().to_string().contains("Ticket not found"));
+            let user_id = create_test_user(&pool, "user").await;
+            let nonexistent_ticket_id = Uuid::new_v4();
 
-    //         cleanup_test_user(&pool, user_id).await;
-    //     }
-    // }
+            let result = service.cancel_ticket(nonexistent_ticket_id, user_id).await;
+            assert!(result.is_err(), "Should fail for nonexistent ticket");
+            assert!(result.unwrap_err().to_string().contains("Ticket not found"));
+
+            cleanup_test_user(&pool, user_id).await;
+        }
+    }
 
     mod nft_operations {
         use super::*;
