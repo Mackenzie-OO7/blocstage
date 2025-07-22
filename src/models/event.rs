@@ -92,6 +92,8 @@ impl Event {
             }
         };
 
+        let mut tx = pool.begin().await?;
+
         let event = sqlx::query_as!(
             Event,
             r#"
@@ -117,14 +119,46 @@ impl Event {
             event.category,
             tags_json
         )
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| {
             error!("❌ Database error creating event: {}", e);
             e
         })?;
 
-        info!("✅ Event created successfully: {}", event.id);
+        let owner_permissions = serde_json::json!({
+            "edit_event": true,
+            "manage_tickets": true,
+            "check_in_guests": true,
+            "view_analytics": true,
+            "manage_organizers": true,
+            "cancel_event": true
+        });
+
+        sqlx::query!(
+            r#"
+        INSERT INTO event_organizers (event_id, user_id, role, permissions, added_at, added_by)
+        VALUES ($1, $2, 'owner', $3, $4, $5)
+        "#,
+            event.id,
+            organizer_id,
+            owner_permissions,
+            now,
+            organizer_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            error!("❌ Database error creating owner record: {}", e);
+            e
+        })?;
+
+        tx.commit().await?;
+
+        info!(
+            "✅ Event and owner record created successfully: {}",
+            event.id
+        );
         Ok(event)
     }
 
@@ -160,49 +194,49 @@ impl Event {
 
         let mut query = String::from("UPDATE events SET updated_at = $1");
         let mut args = PgArguments::default();
-        args.add(now);
+        let _ = args.add(now);
 
         let mut param_index = 2;
 
         if let Some(title) = &update.title {
             query.push_str(&format!(", title = ${}", param_index));
-            args.add(title);
+            let _ = args.add(title);
             param_index += 1;
         }
 
         if let Some(description) = &update.description {
             query.push_str(&format!(", description = ${}", param_index));
-            args.add(description);
+            let _ = args.add(description);
             param_index += 1;
         }
 
         if let Some(location) = &update.location {
             query.push_str(&format!(", location = ${}", param_index));
-            args.add(location);
+            let _ = args.add(location);
             param_index += 1;
         }
 
         if let Some(start_time) = &update.start_time {
             query.push_str(&format!(", start_time = ${}", param_index));
-            args.add(start_time);
+            let _ = args.add(start_time);
             param_index += 1;
         }
 
         if let Some(end_time) = &update.end_time {
             query.push_str(&format!(", end_time = ${}", param_index));
-            args.add(end_time);
+            let _ = args.add(end_time);
             param_index += 1;
         }
 
         if let Some(banner_image_url) = &update.banner_image_url {
             query.push_str(&format!(", banner_image_url = ${}", param_index));
-            args.add(banner_image_url);
+            let _ = args.add(banner_image_url);
             param_index += 1;
         }
 
         if let Some(category) = &update.category {
             query.push_str(&format!(", category = ${}", param_index));
-            args.add(category);
+            let _ = args.add(category);
             param_index += 1;
         }
 
@@ -210,12 +244,12 @@ impl Event {
             query.push_str(&format!(", tags = ${}", param_index));
             let tags_json = serde_json::to_value(tags)
                 .map_err(|e| anyhow::anyhow!("Failed to serialize tags: {}", e))?;
-            args.add(tags_json);
+            let _ = args.add(tags_json);
             param_index += 1;
         }
 
         query.push_str(&format!(" WHERE id = ${} RETURNING *", param_index));
-        args.add(self.id);
+        let _ = args.add(self.id);
 
         let event = sqlx::query_as_with::<_, Event, _>(&query, args)
             .fetch_one(pool)
@@ -426,41 +460,40 @@ impl Event {
                 " AND (title ILIKE ${} OR description ILIKE ${})",
                 param_index, param_index
             ));
-            args.add(pattern);
+            let _ = args.add(pattern);
             param_index += 1;
         }
 
         if let Some(category) = &search.category {
             query.push_str(&format!(" AND category = ${}", param_index));
-            args.add(category);
+            let _ = args.add(category);
             param_index += 1;
         }
 
         if let Some(location) = &search.location {
             let pattern = format!("%{}%", location);
             query.push_str(&format!(" AND location ILIKE ${}", param_index));
-            args.add(pattern);
+            let _ = args.add(pattern);
             param_index += 1;
         }
 
         if let Some(start_date) = &search.start_date {
             query.push_str(&format!(" AND start_time >= ${}", param_index));
-            args.add(start_date);
+            let _ = args.add(start_date);
             param_index += 1;
         }
 
         if let Some(end_date) = &search.end_date {
             query.push_str(&format!(" AND end_time <= ${}", param_index));
-            args.add(end_date);
+            let _ = args.add(end_date);
             param_index += 1;
         }
 
         if let Some(tags) = &search.tags {
             if !tags.is_empty() {
-                // convert tags array to JSONB array for proper PostgreSQL comparison
                 let tags_json = serde_json::to_value(tags)?;
                 query.push_str(&format!(" AND tags @> ${}", param_index));
-                args.add(tags_json);
+                let _ = args.add(tags_json);
                 param_index += 1;
             }
         }
@@ -470,12 +503,12 @@ impl Event {
         // add limit and offset with proper typecasting
         let limit = search.limit.unwrap_or(10);
         query.push_str(&format!(" LIMIT ${}", param_index));
-        args.add(limit);
+        let _ = args.add(limit);
         param_index += 1;
 
         let offset = search.offset.unwrap_or(0);
         query.push_str(&format!(" OFFSET ${}", param_index));
-        args.add(offset);
+        let _ = args.add(offset);
 
         let events = sqlx::query_as_with::<_, Event, _>(&query, args)
             .fetch_all(pool)

@@ -1,5 +1,6 @@
 use crate::models::event::Event;
 use crate::models::user::User;
+use crate::models::EventOrganizer;
 use crate::services::auth::AuthService;
 use actix_web::{
     dev::Payload, error::ErrorUnauthorized, http, web, Error, FromRequest, HttpRequest,
@@ -21,7 +22,7 @@ impl FromRequest for AuthenticatedUser {
     type Future = Ready<Result<Self, Self::Error>>;
 
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
-        info!("🔑 Auth middleware called for: {}", req.path());
+        info!("Auth middleware called for: {}", req.path());
         
         let auth_header = match req.headers().get(http::header::AUTHORIZATION) {
             Some(header) => {
@@ -29,7 +30,7 @@ impl FromRequest for AuthenticatedUser {
                 header
             },
             None => {
-                warn!("❌ Request without authorization header");
+                warn!(" Request without authorization header");
                 return ready(Err(ErrorUnauthorized("Authorization header required")));
             }
         };
@@ -40,13 +41,13 @@ impl FromRequest for AuthenticatedUser {
                 str
             },
             Err(_) => {
-                warn!("❌ Invalid authorization header format");
+                warn!("Invalid authorization header format");
                 return ready(Err(ErrorUnauthorized("Invalid authorization header format")));
             }
         };
 
         if !auth_str.starts_with("Bearer ") {
-            warn!("❌ Authorization header without Bearer scheme");
+            warn!("Authorization header without Bearer scheme");
             return ready(Err(ErrorUnauthorized("Bearer token required")));
         }
 
@@ -54,7 +55,7 @@ impl FromRequest for AuthenticatedUser {
         info!("🎫 Token extracted, length: {}", token.len());
 
         if token.trim().is_empty() {
-            warn!("❌ Empty token provided");
+            warn!("Empty token provided");
             return ready(Err(ErrorUnauthorized("Token cannot be empty")));
         }
 
@@ -64,7 +65,7 @@ impl FromRequest for AuthenticatedUser {
                 pool
             },
             None => {
-                error!("❌ Database pool not found in app data");
+                error!("Database pool not found in app data");
                 return ready(Err(ErrorUnauthorized("Internal server error")));
             }
         };
@@ -75,7 +76,7 @@ impl FromRequest for AuthenticatedUser {
                 service
             },
             Err(e) => {
-                error!("❌ Failed to create auth service: {}", e);
+                error!("Failed to create auth service: {}", e);
                 return ready(Err(ErrorUnauthorized("Internal server error")));
             }
         };
@@ -86,7 +87,7 @@ impl FromRequest for AuthenticatedUser {
                 ready(Ok(AuthenticatedUser { id: user_id }))
             },
             Err(e) => {
-                warn!("❌ Token verification failed: {}", e);
+                warn!("Token verification failed: {}", e);
                 ready(Err(ErrorUnauthorized("Invalid or expired token")))
             }
         }
@@ -117,6 +118,11 @@ pub struct AuditUserInfo {
     pub username: String,
     pub email: String,
     pub ip_address: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorResponse {
+    error: String,
 }
 
 // for profile endpoints, to get full user details
@@ -335,4 +341,43 @@ pub async fn get_user_for_audit(
         email: user.email,
         ip_address,
     })
+}
+
+pub async fn check_event_organizer_access(
+    pool: &PgPool,
+    user_id: Uuid,
+    event_id: Uuid,
+) -> Result<(), HttpResponse> {
+    match EventOrganizer::is_organizer(pool, event_id, user_id).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(HttpResponse::Forbidden().json(ErrorResponse {
+            error: "Access denied. Only event organizers can perform this action".to_string(),
+        })),
+        Err(e) => {
+            error!("Failed to check organizer access: {}", e);
+            Err(HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to verify permissions".to_string(),
+            }))
+        }
+    }
+}
+
+pub async fn check_event_permission(
+    pool: &PgPool,
+    user_id: Uuid,
+    event_id: Uuid,
+    permission: &str,
+) -> Result<(), HttpResponse> {
+    match EventOrganizer::has_permission(pool, event_id, user_id, permission).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(HttpResponse::Forbidden().json(ErrorResponse {
+            error: format!("Access denied. Missing required permission: {}", permission),
+        })),
+        Err(e) => {
+            error!("Failed to check permission {}: {}", permission, e);
+            Err(HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to verify permissions".to_string(),
+            }))
+        }
+    }
 }

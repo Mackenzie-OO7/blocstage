@@ -3,6 +3,9 @@ use crate::controllers::admin_filters::{
 };
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::event::{CreateEventRequest, Event, SearchEventsRequest, UpdateEventRequest};
+use crate::models::event_organizer::{
+    AddOrganizerRequest, EventOrganizer, UpdateOrganizerPermissionsRequest,
+};
 use actix_web::{web, HttpResponse, Responder};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
@@ -108,16 +111,20 @@ pub async fn update_event(
     event_data: web::Json<UpdateEventRequest>,
     user: AuthenticatedUser,
 ) -> impl Responder {
-    let _event =
-        match crate::middleware::auth::check_event_ownership(&pool, user.id, *event_id).await {
-            Ok(event) => event,
-            Err(response) => return response,
-        };
+    let _event = match crate::middleware::auth::check_event_permission(
+        &pool, 
+        user.id, 
+        *event_id,
+        "edit_event"
+    ).await {
+        Ok(event) => event,
+        Err(response) => return response,
+    };
 
     match Event::find_by_id(&pool, *event_id).await {
         Ok(Some(event)) => match event.update(&pool, event_data.into_inner()).await {
             Ok(updated_event) => {
-                info!("Event updated: {} by user {}", event.id, user.id);
+                info!("Event updated: {} by organizer {}", event.id, user.id);
                 HttpResponse::Ok().json(updated_event)
             }
             Err(e) => {
@@ -300,6 +307,224 @@ async fn get_event_stats(pool: &PgPool, event_id: Uuid) -> Result<serde_json::Va
         "total_revenue": stats.total_revenue,
         "ticket_types_count": stats.ticket_types_count.unwrap_or(0)
     }))
+}
+
+// EVENT ORGANIZERS
+
+pub async fn get_event_organizers(
+    pool: web::Data<PgPool>,
+    event_id: web::Path<Uuid>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    match EventOrganizer::is_organizer(&pool, *event_id, user.id).await {
+        Ok(false) => {
+            return HttpResponse::Forbidden().json(ErrorResponse {
+                error: "Only event organizers can view organizer list".to_string(),
+            });
+        }
+        Err(e) => {
+            error!("Failed to check organizer status: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to verify permissions".to_string(),
+            });
+        }
+        Ok(true) => {}
+    }
+
+    match EventOrganizer::get_event_organizers_with_info(&pool, *event_id).await {
+        Ok(organizers) => {
+            info!(
+                "User {} accessed organizers list for event {}. Found {} organizers",
+                user.id, event_id, organizers.len()
+            );
+            HttpResponse::Ok().json(serde_json::json!({
+                "organizers": organizers,
+                "total_count": organizers.len()
+            }))
+        }
+        Err(e) => {
+            error!("Failed to fetch event organizers: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch organizers".to_string(),
+            })
+        }
+    }
+}
+
+pub async fn add_event_organizer(
+    pool: web::Data<PgPool>,
+    event_id: web::Path<Uuid>,
+    organizer_data: web::Json<AddOrganizerRequest>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    match EventOrganizer::is_organizer(&pool, *event_id, user.id).await {
+        Ok(false) => {
+            return HttpResponse::Forbidden().json(ErrorResponse {
+                error: "Only existing organizers can add new organizers".to_string(),
+            });
+        }
+        Err(e) => {
+            error!("Failed to check organizer status: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to verify permissions".to_string(),
+            });
+        }
+        Ok(true) => {}
+    }
+
+    let new_user_id = match EventOrganizer::find_user_by_identifier(&pool, &organizer_data.identifier).await {
+        Ok(Some(user_id)) => user_id,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(ErrorResponse {
+                error: format!("User not found: {}", organizer_data.identifier),
+            });
+        }
+        Err(e) => {
+            error!("Failed to find user: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to search for user".to_string(),
+            });
+        }
+    };
+
+    match EventOrganizer::add_organizer(&pool, *event_id, new_user_id, user.id).await {
+        Ok(organizer) => {
+            info!(
+                "User {} added {} as organizer for event {}",
+                user.id, new_user_id, event_id
+            );
+            HttpResponse::Created().json(serde_json::json!({
+                "success": true,
+                "message": "Organizer added successfully",
+                "organizer": organizer
+            }))
+        }
+        Err(e) => {
+            error!("Failed to add organizer: {}", e);
+            
+            let error_message = if e.to_string().contains("already an organizer") {
+                "This user is already an organizer for this event"
+            } else if e.to_string().contains("Maximum 4 organizers") {
+                "Cannot add more organizers. Maximum of 4 organizers allowed per event"
+            } else {
+                "Failed to add organizer"
+            };
+
+            HttpResponse::BadRequest().json(ErrorResponse {
+                error: error_message.to_string(),
+            })
+        }
+    }
+}
+
+pub async fn remove_event_organizer(
+    pool: web::Data<PgPool>,
+    path: web::Path<(Uuid, Uuid)>, // (event_id, user_id)
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let (event_id, organizer_user_id) = path.into_inner();
+
+    match EventOrganizer::is_owner(&pool, event_id, user.id).await {
+        Ok(false) => {
+            return HttpResponse::Forbidden().json(ErrorResponse {
+                error: "Only the event owner can remove organizers".to_string(),
+            });
+        }
+        Err(e) => {
+            error!("Failed to check owner status: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to verify permissions".to_string(),
+            });
+        }
+        Ok(true) => {}
+    }
+
+    match EventOrganizer::remove_organizer(&pool, event_id, organizer_user_id, user.id).await {
+        Ok(()) => {
+            info!(
+                "Owner {} removed organizer {} from event {}",
+                user.id, organizer_user_id, event_id
+            );
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "message": "Organizer removed successfully"
+            }))
+        }
+        Err(e) => {
+            error!("Failed to remove organizer: {}", e);
+            
+            let error_message = if e.to_string().contains("Cannot remove the event owner") {
+                "Cannot remove the event owner"
+            } else if e.to_string().contains("not an organizer") {
+                "User is not an organizer for this event"
+            } else {
+                "Failed to remove organizer"
+            };
+
+            HttpResponse::BadRequest().json(ErrorResponse {
+                error: error_message.to_string(),
+            })
+        }
+    }
+}
+
+pub async fn update_organizer_permissions(
+    pool: web::Data<PgPool>,
+    path: web::Path<(Uuid, Uuid)>, // (event_id, user_id)
+    permissions_data: web::Json<UpdateOrganizerPermissionsRequest>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let (event_id, organizer_user_id) = path.into_inner();
+
+    match EventOrganizer::is_owner(&pool, event_id, user.id).await {
+        Ok(false) => {
+            return HttpResponse::Forbidden().json(ErrorResponse {
+                error: "Only the event owner can update organizer permissions".to_string(),
+            });
+        }
+        Err(e) => {
+            error!("Failed to check owner status: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to verify permissions".to_string(),
+            });
+        }
+        Ok(true) => {}
+    }
+
+    match EventOrganizer::update_permissions(
+        &pool, 
+        event_id, 
+        organizer_user_id, 
+        permissions_data.permissions.clone(),
+        user.id
+    ).await {
+        Ok(updated_organizer) => {
+            info!(
+                "Owner {} updated permissions for organizer {} on event {}",
+                user.id, organizer_user_id, event_id
+            );
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "message": "Organizer permissions updated successfully",
+                "organizer": updated_organizer
+            }))
+        }
+        Err(e) => {
+            error!("Failed to update organizer permissions: {}", e);
+            
+            let error_message = if e.to_string().contains("Cannot update owner permissions") {
+                "Cannot update owner permissions"
+            } else if e.to_string().contains("not an organizer") {
+                "User is not an organizer for this event"
+            } else {
+                "Failed to update permissions"
+            };
+
+            HttpResponse::BadRequest().json(ErrorResponse {
+                error: error_message.to_string(),
+            })
+        }
+    }
 }
 
 // ADMIN ENDPOINTS
@@ -685,7 +910,11 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/{event_id}", web::get().to(get_event))
             .route("/{event_id}", web::put().to(update_event))
             .route("/{event_id}/cancel", web::post().to(cancel_event))
-            .route("/{event_id}/analytics", web::get().to(get_event_analytics)),
+            .route("/{event_id}/analytics", web::get().to(get_event_analytics))
+            .route("/{event_id}/organizers", web::get().to(get_event_organizers))
+            .route("/{event_id}/organizers", web::post().to(add_event_organizer))
+            .route("/{event_id}/organizers/{user_id}", web::delete().to(remove_event_organizer))
+            .route("/{event_id}/organizers/{user_id}/permissions", web::put().to(update_organizer_permissions))
     )
     .service(
         web::scope("/admin/events")
