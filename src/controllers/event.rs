@@ -1,11 +1,13 @@
 use crate::controllers::admin_filters::{
-    AdminEventFilters, AdminEventView, PageInfo, PaginatedEventsResponse, PaginatedTicketsResponse,
+    AdminEventFilters, AdminEventView, PageInfo, PaginatedEventsResponse,
 };
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::event::{CreateEventRequest, Event, SearchEventsRequest, UpdateEventRequest};
 use crate::models::event_organizer::{
     AddOrganizerRequest, EventOrganizer, UpdateOrganizerPermissionsRequest,
 };
+use crate::models::User;
+use crate::services::StellarService;
 use actix_web::{web, HttpResponse, Responder};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
@@ -899,6 +901,249 @@ async fn get_filtered_events(
     })
 }
 
+pub async fn get_event_financial_summary(
+    pool: web::Data<PgPool>,
+    event_id: web::Path<Uuid>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+
+    let event_service = crate::services::event::EventService::new(pool.get_ref().clone());
+
+    match event_service.get_event_financial_summary(*event_id).await {
+        Ok(summary) => {
+            info!(
+                "Admin {} accessed financial summary for event {}",
+                user.id, event_id
+            );
+            HttpResponse::Ok().json(summary)
+        }
+        Err(e) => {
+            error!("Failed to get event financial summary: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch financial summary".to_string(),
+            })
+        }
+    }
+}
+
+pub async fn pay_organizer(
+    pool: web::Data<PgPool>,
+    event_id: web::Path<Uuid>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+
+    // 1. Verify payout eligibility
+    let existing_payout = match sqlx::query!(
+        "SELECT transaction_hash FROM event_payouts WHERE event_id = $1",
+        *event_id
+    )
+    .fetch_optional(&**pool)
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            error!("Failed to check existing payout: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to verify payout status".to_string(),
+            });
+        }
+    };
+
+    if existing_payout.is_some() {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: "Event has already been paid out".to_string(),
+        });
+    }
+
+    // 2. Calculate total revenue from the event
+    let revenue_result = match sqlx::query!(
+        r#"
+        SELECT 
+            COALESCE(SUM(
+                CASE 
+                    WHEN t.transaction_sponsorship_fee IS NOT NULL 
+                    THEN t.amount - t.transaction_sponsorship_fee
+                    ELSE t.amount
+                END
+            ), 0) as revenue
+        FROM transactions t
+        JOIN tickets tk ON t.ticket_id = tk.id
+        JOIN ticket_types tt ON tk.ticket_type_id = tt.id
+        WHERE 
+            tt.event_id = $1 
+            AND t.status = 'completed'
+            AND t.currency = 'USDC'
+        "#,
+        *event_id
+    )
+    .fetch_one(&**pool)
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            error!("Failed to calculate event revenue: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to calculate event revenue".to_string(),
+            });
+        }
+    };
+
+    let total_revenue_usdc = revenue_result.revenue
+        .map(|amount| amount.to_string().parse::<f64>().unwrap_or(0.0))
+        .unwrap_or(0.0);
+
+    if total_revenue_usdc <= 0.0 {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: "No revenue available for payout".to_string(),
+        });
+    }
+
+    // 3. Get event and organizer info
+    let event = match Event::find_by_id(&pool, *event_id).await {
+        Ok(Some(event)) => event,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(ErrorResponse {
+                error: "Event not found".to_string(),
+            });
+        }
+        Err(e) => {
+            error!("Failed to fetch event: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch event".to_string(),
+            });
+        }
+    };
+
+    let organizer = match User::find_by_id(&pool, event.organizer_id).await {
+        Ok(Some(organizer)) => organizer,
+        Ok(None) => {
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Event organizer not found".to_string(),
+            });
+        }
+        Err(e) => {
+            error!("Failed to fetch organizer: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch organizer".to_string(),
+            });
+        }
+    };
+
+    let organizer_wallet = match &organizer.stellar_public_key {
+        Some(wallet) => wallet.clone(),
+        None => {
+            return HttpResponse::BadRequest().json(ErrorResponse {
+                error: "Organizer does not have a Stellar wallet".to_string(),
+            });
+        }
+    };
+
+    // 4. Verify organizer has USDC trustline
+    let stellar = match StellarService::new() {
+        Ok(service) => service,
+        Err(e) => {
+            error!("Failed to initialize Stellar service: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to initialize payment service".to_string(),
+            });
+        }
+    };
+
+    if !stellar.has_usdc_trustline(&organizer_wallet).await.unwrap_or(false) {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: "Organizer needs to set up USDC trustline first".to_string(),
+        });
+    }
+
+    // 5. Get platform configuration
+    let platform_secret = match std::env::var("PLATFORM_PAYMENT_SECRET") {
+        Ok(secret) => secret,
+        Err(_) => {
+            error!("Platform payment secret not configured");
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Payment system not configured".to_string(),
+            });
+        }
+    };
+
+    let platform_fee_percentage = std::env::var("PLATFORM_FEE_PERCENTAGE")
+        .unwrap_or_else(|_| "5.0".to_string())
+        .parse::<f64>()
+        .unwrap_or(5.0);
+
+    // 6. Process payment using your existing method
+    let tx_hash = match stellar
+        .pay_event_organizer(
+            &platform_secret,
+            &organizer_wallet,
+            total_revenue_usdc,
+            platform_fee_percentage,
+        )
+        .await
+    {
+        Ok(hash) => hash,
+        Err(e) => {
+            error!("Failed to process organizer payout: {}", e);
+            let error_message = if e.to_string().contains("insufficient") {
+                "Platform has insufficient balance for payout"
+            } else {
+                "Failed to process payment"
+            };
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: error_message.to_string(),
+            });
+        }
+    };
+
+    // 7. Record payout in database
+    let organizer_payout = total_revenue_usdc * (1.0 - platform_fee_percentage / 100.0);
+    let record_result = sqlx::query!(
+        r#"
+        INSERT INTO event_payouts (event_id, transaction_hash, amount, paid_at)
+        VALUES ($1, $2, $3, NOW())
+        "#,
+        *event_id,
+        tx_hash,
+        bigdecimal::BigDecimal::try_from(organizer_payout)
+            .map_err(|e| anyhow::anyhow!("Invalid payout amount: {}", e)).unwrap()
+    )
+    .execute(&**pool)
+    .await;
+
+    if let Err(e) = record_result {
+        error!("Failed to record payout: {}", e);
+        // Payment succeeded but recording failed - this is critical
+        return HttpResponse::InternalServerError().json(ErrorResponse {
+            error: "Payment processed but failed to record. Contact support.".to_string(),
+        });
+    }
+
+    // 8. Success response
+    info!(
+        "Admin {} triggered manual payout for event {}: {} USDC → {} USDC to organizer (tx: {})",
+        user.id, event_id, total_revenue_usdc, organizer_payout, tx_hash
+    );
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "message": "Manual payout processed successfully",
+        "transaction_hash": tx_hash,
+        "event_id": *event_id,
+        "total_revenue": format!("{:.2}", total_revenue_usdc),
+        "organizer_payout": format!("{:.2}", organizer_payout),
+        "platform_fee": format!("{:.2}", total_revenue_usdc * (platform_fee_percentage / 100.0)),
+        "currency": "USDC"
+    }))
+}
+
 // ROUTE CONFIGURATION
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
@@ -920,6 +1165,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         web::scope("/admin/events")
             .route("", web::get().to(admin_get_all_events))
             .route("/{event_id}", web::get().to(admin_get_event_details))
-            .route("/{event_id}/cancel", web::post().to(admin_cancel_any_event)),
+            .route("/{event_id}/cancel", web::post().to(admin_cancel_any_event))
+            .route("/{event_id}/financial-summary", web::get().to(get_event_financial_summary))
+            .route("/{event_id}/trigger-payout", web::post().to(pay_organizer))
     );
 }

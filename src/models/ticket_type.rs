@@ -1,7 +1,7 @@
 use anyhow::Result;
+use bigdecimal::{BigDecimal, Signed, Zero};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::types::BigDecimal;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -31,6 +31,21 @@ pub struct CreateTicketTypeRequest {
     pub total_supply: Option<i32>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct TicketTypeWithFeePreview {
+    pub ticket_type: TicketType,
+    pub fee_preview: Option<FeePreview>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FeePreview {
+    pub ticket_price: String,
+    pub sponsorship_fee: String,
+    pub total_cost: String,
+    pub currency: String,
+    pub fee_explanation: String,
+}
+
 impl TicketType {
     pub async fn create(
         pool: &PgPool,
@@ -44,8 +59,17 @@ impl TicketType {
             if ticket_type.price.is_none() {
                 return Err(anyhow::anyhow!("Price is required for paid tickets"));
             }
-            if ticket_type.currency.is_none() {
-                return Err(anyhow::anyhow!("Currency is required for paid tickets"));
+            let price = ticket_type.price.as_ref().unwrap();
+            if price.is_negative() || price.is_zero() {
+                return Err(anyhow::anyhow!(
+                    "Price must be greater than 0 for paid tickets"
+                ));
+            }
+
+            if let Some(ref currency) = ticket_type.currency {
+                if currency != "USDC" {
+                    return Err(anyhow::anyhow!("Only USDC is supported for paid tickets"));
+                }
             }
         }
 
@@ -53,7 +77,13 @@ impl TicketType {
             (None, None)
         } else {
             // For paid tickets, default currency to XLM if not provided
-            let currency = ticket_type.currency.unwrap_or_else(|| "XLM".to_string());
+            let currency = ticket_type.currency.unwrap_or_else(|| "USDC".to_string());
+            if currency != "USDC" {
+                return Err(anyhow::anyhow!(
+                    "Only USDC is supported. Provided currency: {}",
+                    currency
+                ));
+            }
             (ticket_type.price, Some(currency))
         };
 
@@ -170,6 +200,91 @@ impl TicketType {
             })),
             None => Ok(None),
         }
+    }
+
+    pub async fn get_with_fee_preview(&self, pool: &PgPool) -> Result<TicketTypeWithFeePreview> {
+        let fee_preview = if !self.is_free && self.price.is_some() {
+            // Calculate fee preview using FeeCalculator
+            let fee_calculator = crate::services::fee_calculator::FeeCalculator::new(pool.clone())?;
+            let ticket_price = self.price.as_ref().unwrap().to_string().parse::<f64>()?;
+
+            match fee_calculator.get_fee_breakdown(ticket_price).await {
+                Ok(breakdown) => Some(FeePreview {
+                    ticket_price: breakdown.ticket_price,
+                    sponsorship_fee: breakdown.sponsorship_fee,
+                    total_cost: breakdown.total_amount,
+                    currency: breakdown.currency,
+                    fee_explanation:
+                        "Sponsorship fee covers transaction costs - no gas fees for you!"
+                            .to_string(),
+                }),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        Ok(TicketTypeWithFeePreview {
+            ticket_type: self.clone(),
+            fee_preview,
+        })
+    }
+
+    pub async fn update_price(
+        &self,
+        pool: &PgPool,
+        new_price: Option<BigDecimal>,
+        currency: Option<String>,
+    ) -> Result<Self> {
+        // Validate currency is USDC for paid tickets
+        if let Some(price) = &new_price {
+            if !price.is_zero() && !price.is_negative() {
+                let final_currency = currency
+                    .as_ref()
+                    .map(|c| c.clone())
+                    .unwrap_or_else(|| "USDC".to_string());
+                if final_currency != "USDC" {
+                    return Err(anyhow::anyhow!("Only USDC is supported for paid tickets"));
+                }
+            }
+        }
+
+        // Determine if this should be a free ticket
+        let is_free =
+            new_price.is_none() || new_price.as_ref().map(|p| p.is_zero()).unwrap_or(true);
+
+        let result = sqlx::query_as!(
+            TicketType,
+            r#"
+        UPDATE ticket_types
+        SET price = $1, currency = $2, updated_at = $3, is_free = $4
+        WHERE id = $5
+        RETURNING id, event_id, name, description, is_free, price, currency, 
+                 total_supply, remaining, is_active, created_at, updated_at
+        "#,
+            new_price,
+            currency,
+            Utc::now(),
+            is_free,
+            self.id
+        )
+        .fetch_one(pool)
+        .await?;
+
+        Ok(TicketType {
+            id: result.id,
+            event_id: result.event_id,
+            name: result.name,
+            description: result.description,
+            is_free: result.is_free,
+            price: result.price,
+            currency: result.currency,
+            total_supply: result.total_supply,
+            remaining: result.remaining,
+            is_active: result.is_active,
+            created_at: result.created_at,
+            updated_at: result.updated_at,
+        })
     }
 
     pub async fn decrease_remaining(&self, pool: &PgPool) -> Result<Self> {
@@ -301,6 +416,98 @@ impl TicketType {
                 (None, _) => "Free".to_string(),
             }
         }
+    }
+
+    pub async fn formatted_price_with_fees(&self, pool: &PgPool) -> Result<String> {
+        if self.is_free {
+            return Ok("Free".to_string());
+        }
+
+        let price = match &self.price {
+            Some(p) => p,
+            None => return Ok("Free".to_string()),
+        };
+
+        // Calculate total cost including fees
+        let fee_calculator = crate::services::fee_calculator::FeeCalculator::new(pool.clone())?;
+        let ticket_price = price.to_string().parse::<f64>()?;
+
+        match fee_calculator.get_fee_breakdown(ticket_price).await {
+            Ok(breakdown) => Ok(format!(
+                "{} USDC (+ {} fee = {} total)",
+                breakdown.ticket_price, breakdown.sponsorship_fee, breakdown.total_amount
+            )),
+            Err(_) => {
+                // Fallback to basic price display
+                Ok(format!("{} USDC", price))
+            }
+        }
+    }
+
+    pub async fn get_statistics(&self, pool: &PgPool) -> Result<serde_json::Value> {
+        let sold_count = if let Some(total) = self.total_supply {
+            if let Some(remaining) = self.remaining {
+                total - remaining
+            } else {
+                0
+            }
+        } else {
+            // For unlimited tickets, count actual sales
+            let count = sqlx::query!(
+                r#"
+                SELECT COUNT(*) as count
+                FROM tickets t
+                JOIN transactions tr ON t.id = tr.ticket_id
+                WHERE t.ticket_type_id = $1 AND tr.status = 'completed'
+                "#,
+                self.id
+            )
+            .fetch_one(pool)
+            .await?;
+
+            count.count.unwrap_or(0) as i32
+        };
+
+        let revenue = if !self.is_free {
+            let result = sqlx::query!(
+                r#"
+                SELECT COALESCE(SUM(
+                    CASE 
+                        WHEN tr.transaction_sponsorship_fee IS NOT NULL 
+                        THEN tr.amount - tr.transaction_sponsorship_fee
+                        ELSE tr.amount
+                    END
+                ), 0) as revenue
+                FROM tickets t
+                JOIN transactions tr ON t.id = tr.ticket_id
+                WHERE t.ticket_type_id = $1 AND tr.status = 'completed'
+                "#,
+                self.id
+            )
+            .fetch_one(pool)
+            .await?;
+
+            result
+                .revenue
+                .map(|amount| amount.to_string().parse::<f64>().unwrap_or(0.0))
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+
+        Ok(serde_json::json!({
+            "ticket_type_id": self.id,
+            "name": self.name,
+            "is_free": self.is_free,
+            "price": self.formatted_price(),
+            "total_supply": self.total_supply,
+            "remaining": self.remaining,
+            "sold": sold_count,
+            "revenue": format!("{:.2}", revenue),
+            "currency": self.currency,
+            "is_active": self.is_active,
+            "availability_status": if self.is_available() { "Available" } else { "Unavailable" }
+        }))
     }
 }
 

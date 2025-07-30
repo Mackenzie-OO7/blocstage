@@ -9,13 +9,14 @@ use actix_web::{
 };
 use actix_cors::Cors;
 use actix_governor::{Governor, GovernorConfigBuilder};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{pool, postgres::PgPoolOptions};
 use dotenv::dotenv;
 use std::{env, time::Duration};
 use log::{info, error, warn};
 use serde_json::json;
 
 use crate::services::scheduler::SchedulerService;
+use crate::services::sponsor_manager::SponsorManager;
 
 use blocstage::controllers::configure_routes;
 use blocstage::api_info;
@@ -92,6 +93,18 @@ async fn main() -> std::io::Result<()> {
         Ok(_) => info!("Database connection successful"),
         Err(e) => {
             error!("Database connection failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    info!("🏦 Initializing sponsor accounts...");
+    match initialize_sponsor_system(&db_pool).await {
+        Ok(sponsor_count) => {
+            info!("✅ {} sponsor accounts initialized and validated", sponsor_count);
+        }
+        Err(e) => {
+            error!("❌ Failed to initialize sponsor system: {}", e);
+            error!("💡 Please check your sponsor account configuration");
             std::process::exit(1);
         }
     }
@@ -212,70 +225,218 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
+async fn initialize_sponsor_system(pool: &sqlx::PgPool) -> Result<usize, Box<dyn std::error::Error>> {
+    let sponsor_manager = SponsorManager::new(pool.clone())?;
+    
+    // Initialize sponsor accounts from environment
+    sponsor_manager.initialize_sponsor_accounts().await?;
+    
+    // Get and validate sponsor statistics
+    let sponsor_stats = sponsor_manager.get_sponsor_statistics().await?;
+    let active_sponsors = sponsor_stats.iter().filter(|s| s.is_active).count();
+    
+    if active_sponsors == 0 {
+        return Err("No active sponsor accounts available for fee sponsorship".into());
+    }
+
+    info!("📊 Sponsor Account Summary:");
+    for account in &sponsor_stats {
+        let balance_info = if let Some(balance) = &account.current_balance {
+            format!("{} XLM", balance)
+        } else {
+            "Balance unknown".to_string()
+        };
+        
+        let status = if account.is_active { "✅ Active" } else { "❌ Inactive" };
+        info!("   {} - {} - Sponsored: {} txs", 
+            account.account_name, 
+            status, 
+            account.transactions_sponsored.unwrap_or(0));
+        info!("Balance: {}", balance_info);
+    }
+
+    Ok(sponsor_stats.len())
+}
+
 fn validate_environment_variables() {
     let required_vars = [
         "DATABASE_URL",
         "JWT_SECRET",
         "STELLAR_NETWORK",
         "MASTER_ENCRYPTION_KEY",
+        "PLATFORM_WALLET_PUBLIC_KEY",
+        "SPONSORSHIP_FEE_ACCOUNT_PUBLIC",
+        "SPONSOR_ACCOUNT_1_SECRET",
     ];
     
+    let important_vars = [
+        "USDC_ISSUER_PUBLIC_KEY",
+        "PLATFORM_FEE_PERCENTAGE",
+        "TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE",
+        "GAS_FEE_MARGIN_PERCENTAGE",
+        "SPONSOR_MINIMUM_BALANCE",
+        "SPONSOR_LOW_BALANCE_ALERT_THRESHOLD",
+        "SPONSOR_ACCOUNT_2_SECRET",
+        "SPONSOR_ACCOUNT_3_SECRET",
+    ];
+
     let optional_vars = [
         "SERVER_HOST",
-        "SERVER_PORT", 
-        "CORS_ALLOWED_ORIGINS",
-        "SMTP_SERVER",
-        "SMTP_USERNAME", 
-        "SMTP_PASSWORD",
-        "EMAIL_FROM",
-        "APP_URL",
-        "PLATFORM_WALLET_PUBLIC_KEY",
-        "PLATFORM_PAYMENT_SECRET",
+        "SERVER_PORT",
+        "LOCAL_STORAGE_DIR",
         "NFT_ISSUER_PUBLIC_KEY",
         "NFT_ISSUER_SECRET_KEY",
-        "S3_BUCKET_NAME",
-        "S3_BASE_URL",
-        "LOCAL_STORAGE_DIR",
+        "EMAIL_FROM",
+        "SPONSOR_BALANCE_CHECK_INTERVAL",
     ];
-    
-    let mut missing_required = Vec::new();
-    for var in required_vars.iter() {
+
+    // Check important variables
+    let mut missing_important = Vec::new();
+    for var in important_vars.iter() {
         if env::var(var).is_err() {
-            missing_required.push(*var);
+            missing_important.push(*var);
         }
     }
-    
-    if !missing_required.is_empty() {
-        error!("Missing required environment variables: {}", missing_required.join(", "));
-        error!("Please set these variables in your .env file or environment");
+
+    if !missing_important.is_empty() {
+        error!("❌ Missing important environment variables:");
+        for var in &missing_important {
+            error!("   - {}", var);
+        }
+        error!("💡 Please set these variables in your .env file");
         std::process::exit(1);
     }
-    
+
+    // Check important variables
+    let mut missing_important = Vec::new();
+    for var in important_vars.iter() {
+        if env::var(var).is_err() {
+            missing_important.push(*var);
+        }
+    }
+
+    if !missing_important.is_empty() {
+        warn!("⚠️  Missing important environment variables (using defaults):");
+        for var in &missing_important {
+            warn!("   - {}", var);
+        }
+    }
+
+    // Check optional variables
     let mut missing_optional = Vec::new();
     for var in optional_vars.iter() {
         if env::var(var).is_err() {
             missing_optional.push(*var);
         }
     }
-    
+
     if !missing_optional.is_empty() {
-        warn!("Optional environment variables not set: {}", missing_optional.join(", "));
-        warn!("Some features may not work without these variables");
+        info!("ℹ️  Optional environment variables not set:");
+        for var in &missing_optional {
+            info!("   - {} (using default)", var);
+        }
     }
-    
+
+    // Validate specific values
+    validate_specific_configurations();
+
+    info!("✅ Environment validation completed successfully");
+}
+
+/// Validate specific configuration values
+fn validate_specific_configurations() {
+    // Validate JWT secret length
     if let Ok(jwt_secret) = env::var("JWT_SECRET") {
         if jwt_secret.len() < 32 {
-            error!("JWT_SECRET must be at least 32 characters long for security");
+            error!("❌ JWT_SECRET must be at least 32 characters long for security");
             std::process::exit(1);
         }
     }
-    
+
+    // Validate master encryption key
     if let Ok(master_key) = env::var("MASTER_ENCRYPTION_KEY") {
         if master_key.len() != 64 {
-            error!("MASTER_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)");
+            error!("❌ MASTER_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)");
             std::process::exit(1);
         }
     }
-    
-    info!("Environment validation completed successfully");
+
+    // Validate fee percentages
+    if let Ok(platform_fee) = env::var("PLATFORM_FEE_PERCENTAGE") {
+        match platform_fee.parse::<f64>() {
+            Ok(fee) if fee < 0.0 || fee > 50.0 => {
+                error!("❌ PLATFORM_FEE_PERCENTAGE must be between 0 and 50");
+                std::process::exit(1);
+            }
+            Err(_) => {
+                error!("❌ PLATFORM_FEE_PERCENTAGE must be a valid number");
+                std::process::exit(1);
+            }
+            _ => {}
+        }
+    }
+
+    if let Ok(sponsorship_fee) = env::var("TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE") {
+        match sponsorship_fee.parse::<f64>() {
+            Ok(fee) if fee < 0.0 || fee > 50.0 => {
+                error!("❌ TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE must be between 0 and 50");
+                std::process::exit(1);
+            }
+            Err(_) => {
+                error!("❌ TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE must be a valid number");
+                std::process::exit(1);
+            }
+            _ => {}
+        }
+    }
+
+    // Validate Stellar public keys format
+    let public_key_vars = ["PLATFORM_PAYMENT_PUBLIC", "SPONSORSHIP_FEE_ACCOUNT_PUBLIC"];
+    for var in public_key_vars.iter() {
+        if let Ok(key) = env::var(var) {
+            if !key.starts_with('G') || key.len() != 56 {
+                error!("❌ {} must be a valid Stellar public key (starts with G, 56 characters)", var);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Validate sponsor secret keys format
+    let mut sponsor_counter = 1;
+    while let Ok(secret) = env::var(&format!("SPONSOR_ACCOUNT_{}_SECRET", sponsor_counter)) {
+        if !secret.starts_with('S') || secret.len() != 56 {
+            error!("❌ SPONSOR_ACCOUNT_{}_SECRET must be a valid Stellar secret key (starts with S, 56 characters)", sponsor_counter);
+            std::process::exit(1);
+        }
+        sponsor_counter += 1;
+    }
+
+    if sponsor_counter == 1 {
+        error!("❌ At least one sponsor account (SPONSOR_ACCOUNT_1_SECRET) must be configured");
+        std::process::exit(1);
+    } else {
+        info!("✅ Found {} sponsor account(s) configured", sponsor_counter - 1);
+    }
+
+    // Validate network configuration
+    if let Ok(network) = env::var("STELLAR_NETWORK") {
+        if network != "testnet" && network != "mainnet" {
+            error!("❌ STELLAR_NETWORK must be either 'testnet' or 'mainnet'");
+            std::process::exit(1);
+        }
+        
+        if network == "mainnet" {
+            warn!("⚠️  Running on Stellar MAINNET - real money will be involved!");
+        } else {
+            info!("🧪 Running on Stellar TESTNET - safe for development");
+        }
+    }
+
+    // Display configuration summary
+    info!("📋 Configuration Summary:");
+    info!("   Platform Fee: {}%", env::var("PLATFORM_FEE_PERCENTAGE").unwrap_or_else(|_| "5.0".to_string()));
+    info!("   Sponsorship Fee: {}%", env::var("TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE").unwrap_or_else(|_| "2.5".to_string()));
+    info!("   Gas Margin: {}%", env::var("GAS_FEE_MARGIN_PERCENTAGE").unwrap_or_else(|_| "20".to_string()));
+    info!("   Sponsor Min Balance: {} XLM", env::var("SPONSOR_MINIMUM_BALANCE").unwrap_or_else(|_| "200".to_string()));
+    info!("   Network: {}", env::var("STELLAR_NETWORK").unwrap_or_else(|_| "testnet".to_string()));
 }

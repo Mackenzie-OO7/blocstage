@@ -219,6 +219,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
         web::scope("/auth")
             .route("/register", web::post().to(register))
             .route("/login", web::post().to(login))
+            // .route("/logout", web::post().to(auth::logout))
             .route("/verify-email", web::get().to(verify_email))
             .route("/request-password-reset", web::post().to(request_password_reset))
             .route("/reset-password", web::post().to(reset_password))
