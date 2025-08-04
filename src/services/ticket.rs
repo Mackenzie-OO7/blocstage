@@ -6,6 +6,7 @@ use crate::models::{
 use crate::services::stellar::StellarService;
 use crate::services::sponsor_manager::SponsorManager;
 use crate::services::fee_calculator::FeeCalculator;
+use crate::services::payment_orchestrator::PaymentOrchestrator;
 use anyhow::{anyhow, Result};
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::config::Region;
@@ -35,6 +36,7 @@ pub struct TicketService {
     s3_client: Option<S3Client>,
     sponsor_manager: SponsorManager,
     fee_calculator: FeeCalculator,
+    payment_orchestrator: PaymentOrchestrator,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +58,12 @@ impl TicketService {
         let stellar = StellarService::new()?;
         let sponsor_manager = SponsorManager::new(pool.clone())?;
         let fee_calculator = FeeCalculator::new(pool.clone())?;
+        let payment_orchestrator = PaymentOrchestrator::new(
+            stellar.clone(),
+            sponsor_manager.clone(),
+            fee_calculator.clone(),
+        )?;
+
         //TODO: If we end up using AWS, initialize S3 client with AWS credentials. if not, remove s3 everywhere
         let s3_client = match Self::initialize_s3().await {
             Ok(client) => Some(client),
@@ -72,6 +80,7 @@ impl TicketService {
             s3_client,
             sponsor_manager,
             fee_calculator,
+            payment_orchestrator,
         })
     }
 
@@ -381,18 +390,18 @@ impl TicketService {
                 let issuer_public_key = env::var("NFT_ISSUER_PUBLIC_KEY")
                     .map_err(|_| anyhow!("NFT issuer not configured"))?;
 
-                let is_valid = self
-                    .stellar
-                    .verify_nft_ownership(public_key, nft_id, &issuer_public_key)
-                    .await?;
+                // let is_valid = self
+                //     .stellar
+                //     .verify_nft_ownership(public_key, nft_id, &issuer_public_key)
+                //     .await?;
 
-                if !is_valid {
-                    info!(
-                        "Ticket {} verification failed: NFT ownership verification failed",
-                        ticket_id
-                    );
-                    return Ok(false);
-                }
+                // if !is_valid {
+                //     info!(
+                //         "Ticket {} verification failed: NFT ownership verification failed",
+                //         ticket_id
+                //     );
+                //     return Ok(false);
+                // }
             } else {
                 info!(
                     "Ticket {} verification failed: owner has no Stellar wallet",
@@ -446,13 +455,14 @@ impl TicketService {
             fee_calculation.total_user_pays
         );
 
-        // Validate user has sufficient USDC balance
-        if let Some(user_public_key) = &user.stellar_public_key {
-            if !self.stellar.validate_usdc_payment(user_public_key, fee_calculation.total_user_pays).await? {
-                return Err(anyhow!("Insufficient USDC balance for ticket purchase"));
-            }
-        } else {
-            return Err(anyhow!("User has no Stellar wallet configured"));
+        let payment_capability = self.payment_orchestrator
+            .validate_payment_capability(&user, fee_calculation.total_user_pays)
+            .await?;
+
+        if !payment_capability.can_make_payment {
+            let error_msg = payment_capability.errors.join("; ");
+            error!("Payment validation failed for user {}: {}", user_id, error_msg);
+            return Err(anyhow!("Payment validation failed: {}", error_msg));
         }
 
         let mut tx = self.pool.begin().await?;
@@ -472,30 +482,32 @@ impl TicketService {
             )
             .await?;
 
-    // Create transaction with fee breakdown
-    let transaction = self
-    .create_transaction_with_fees(
-        &mut tx,
-        ticket.id,
-        user_id,
-        BigDecimal::try_from(fee_calculation.ticket_price)
-            .map_err(|e| anyhow!("Invalid ticket price: {}", e))?,
-        BigDecimal::try_from(fee_calculation.final_sponsorship_fee)
-            .map_err(|e| anyhow!("Invalid sponsorship fee: {}", e))?,
-        "USDC",
-        "pending",
-    )
-    .await?;
-
-        // Record fee calculation for transparency
-        self.fee_calculator.record_fee_calculation(transaction.id, &fee_calculation).await?;
-
-        // Process sponsored USDC payment
-        let payment_result = self
-            .process_sponsored_usdc_payment(&user, &transaction, &fee_calculation)
+        // Create transaction with fee breakdown
+        let transaction = self
+            .create_transaction_record_with_fees(
+                &mut tx,
+                ticket.id,
+                user_id,
+                BigDecimal::try_from(fee_calculation.ticket_price)
+                    .map_err(|e| anyhow!("Invalid ticket price: {}", e))?,
+                BigDecimal::try_from(fee_calculation.final_sponsorship_fee)
+                    .map_err(|e| anyhow!("Invalid sponsorship fee: {}", e))?,
+                "USDC",
+                "pending",
+            )
             .await?;
 
-        // Update transaction with payment details
+        self.fee_calculator.record_fee_calculation(transaction.id, &fee_calculation).await?;
+
+        let payment_result = self.payment_orchestrator
+            .execute_sponsored_payment(&user, &transaction, &fee_calculation)
+            .await
+            .map_err(|e| {
+                error!("Payment failed for user {}: {}", user_id, e);
+                let user_friendly_error = self.payment_orchestrator.format_user_friendly_error(&e);
+                anyhow!("{}", user_friendly_error)
+            })?;
+
         let completed_transaction = transaction
             .update_sponsorship_details(
                 &self.pool,
@@ -505,7 +517,6 @@ impl TicketService {
             )
             .await?;
 
-        // Update sponsor usage tracking
         self.sponsor_manager
             .record_sponsorship_usage(&payment_result.sponsor_account_used, payment_result.gas_fee_xlm)
             .await?;
@@ -520,64 +531,64 @@ impl TicketService {
         Ok((ticket, completed_transaction))
     }
 
-    async fn process_sponsored_usdc_payment(
-        &self,
-        user: &User,
-        transaction: &Transaction,
-        fee_calculation: &crate::services::fee_calculator::FeeCalculation,
-    ) -> Result<crate::services::stellar::SponsoredPaymentResult> {
-        info!("💳 Processing sponsored USDC payment");
+    // async fn process_sponsored_usdc_payment(
+    //     &self,
+    //     user: &User,
+    //     transaction: &Transaction,
+    //     fee_calculation: &crate::services::fee_calculator::FeeCalculation,
+    // ) -> Result<crate::services::stellar::SponsoredPaymentResult> {
+    //     info!("💳 Processing sponsored USDC payment");
 
-        // Get platform payment account
-        let platform_wallet = env::var("PLATFORM_PAYMENT_PUBLIC")
-            .map_err(|_| anyhow!("Platform payment wallet not configured"))?;
+    //     // Get platform payment account
+    //     let platform_wallet = env::var("PLATFORM_PAYMENT_PUBLIC_KEY")
+    //         .map_err(|_| anyhow!("Platform payment wallet not configured"))?;
 
-        // Get available sponsor account
-        let sponsor_info = self.sponsor_manager.get_available_sponsor().await?;
+    //     // Get available sponsor account
+    //     let sponsor_info = self.sponsor_manager.get_available_sponsor().await?;
 
-        // Get user's encrypted secret key
-        let encrypted_secret = user
-            .stellar_secret_key_encrypted
-            .clone()
-            .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
+    //     // Get user's encrypted secret key
+    //     let encrypted_secret = user
+    //         .stellar_secret_key_encrypted
+    //         .clone()
+    //         .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
 
-        // Decrypt user's secret key
-        let crypto = crate::services::crypto::KeyEncryption::new()
-            .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
-        let user_secret_key = crypto
-            .decrypt_secret_key(&encrypted_secret)
-            .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
+    //     // Decrypt user's secret key
+    //     let crypto = crate::services::crypto::KeyEncryption::new()
+    //         .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
+    //     let user_secret_key = crypto
+    //         .decrypt_secret_key(&encrypted_secret)
+    //         .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
 
-        // Check if user has USDC trustline
-        if let Some(user_public_key) = &user.stellar_public_key {
-            if !self.stellar.has_usdc_trustline(user_public_key).await? {
-                return Err(anyhow!("User does not have USDC trustline. Please create USDC trustline first."));
-            }
-        }
+    //     // Check if user has USDC trustline
+    //     if let Some(user_public_key) = &user.stellar_public_key {
+    //         if !self.stellar.has_usdc_trustline(user_public_key).await? {
+    //             return Err(anyhow!("User does not have USDC trustline. Please create USDC trustline first."));
+    //         }
+    //     }
 
-        // Send sponsored USDC payment
-        let total_amount = fee_calculation.total_user_pays.to_string();
-        let payment_result = self
-            .stellar
-            .send_payment(
-                &user_secret_key,
-                &platform_wallet,
-                &total_amount,
-                &sponsor_info.secret_key,
-            )
-            .await?;
+    //     // Send sponsored USDC payment
+    //     let total_amount = fee_calculation.total_user_pays.to_string();
+    //     let payment_result = self
+    //         .stellar
+    //         .send_payment(
+    //             &user_secret_key,
+    //             &platform_wallet,
+    //             &total_amount,
+    //             &sponsor_info.secret_key,
+    //         )
+    //         .await?;
 
-        info!(
-            "✅ Sponsored payment successful: {} USDC sent, {} XLM gas paid by sponsor {}",
-            payment_result.usdc_amount_sent,
-            payment_result.gas_fee_xlm,
-            sponsor_info.account_name
-        );
+    //     info!(
+    //         "✅ Sponsored payment successful: {} USDC sent, {} XLM gas paid by sponsor {}",
+    //         payment_result.usdc_amount_sent,
+    //         payment_result.gas_fee_xlm,
+    //         sponsor_info.account_name
+    //     );
 
-        Ok(payment_result)
-    }
+    //     Ok(payment_result)
+    // }
 
-    async fn create_transaction_with_fees(
+    async fn create_transaction_record_with_fees(
     &self,
     tx: &mut SqlxTransaction<'_, Postgres>,
     ticket_id: Uuid,
@@ -586,49 +597,71 @@ impl TicketService {
     sponsorship_fee: BigDecimal,
     currency: &str,
     status: &str,
-) -> Result<Transaction> {
-    let id = Uuid::new_v4();
-    let now = Utc::now();
+    ) -> Result<Transaction> {
+        let id = Uuid::new_v4();
+        let now = Utc::now();
 
-    let receipt_number = format!(
-        "RCT-{}-{}",
-        now.format("%Y%m%d"),
-        self.generate_random_receipt_suffix()
-    );
+        let receipt_number = format!(
+            "RCT-{}-{}",
+            now.format("%Y%m%d"),
+            self.generate_random_receipt_suffix()
+        );
 
-    let transaction = sqlx::query_as!(
-        Transaction,
-        r#"
-        INSERT INTO transactions (
-            id, ticket_id, user_id, amount, currency, status, 
-            transaction_sponsorship_fee, created_at, updated_at, receipt_number
+        let transaction = sqlx::query_as!(
+            Transaction,
+            r#"
+            INSERT INTO transactions (
+                id, ticket_id, user_id, amount, currency, status, 
+                transaction_sponsorship_fee, created_at, updated_at, receipt_number
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            RETURNING *
+            "#,
+            id,
+            ticket_id,
+            user_id,
+            ticket_amount,
+            currency,
+            status,
+            sponsorship_fee,
+            now,
+            now,
+            receipt_number
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING *
-        "#,
-        id,
-        ticket_id,
-        user_id,
-        ticket_amount,
-        currency,
-        status,
-        sponsorship_fee,
-        now,
-        now,
-        receipt_number
-    )
-    .fetch_one(&mut **tx)
-    .await?;
+        .fetch_one(&mut **tx)
+        .await?;
 
-    Ok(transaction)
-}
+        Ok(transaction)
+    }
 
-    /// Get fee preview for user before purchase
+    pub async fn create_usdc_trustline_for_user(&self, user_id: Uuid) -> Result<String> {
+        info!("🤝 Creating USDC trustline for user: {}", user_id);
+
+        let user = User::find_by_id(&self.pool, user_id)
+        .await?
+        .ok_or_else(|| anyhow!("User not found"))?;
+
+        // Use orchestrator for trustline creation
+        match self.payment_orchestrator.ensure_usdc_trustline(&user).await? {
+            Some(tx_hash) => {
+                info!("✅ USDC trustline created for user {}: {}", user_id, tx_hash);
+                 Ok(tx_hash)
+            }
+            None => {
+                info!("ℹ️ User {} already has USDC trustline", user_id);
+                Ok("TRUSTLINE_ALREADY_EXISTS".to_string())
+            }
+                
+        }
+    }
+
     pub async fn get_purchase_preview(
         &self,
         ticket_type_id: Uuid,
         user_id: Uuid,
     ) -> Result<serde_json::Value> {
+        info!("🎫 Getting purchase preview for user: {}", user_id);
+
         let (ticket_type, _event, user) = self
             .validate_ticket_purchase(ticket_type_id, user_id)
             .await?;
@@ -639,55 +672,39 @@ impl TicketService {
                 "price": "Free",
                 "total": "Free",
                 "currency": "N/A",
-                "breakdown": "This is a free ticket - no payment required"
+                "breakdown": "This is a free ticket - no payment required",
+                "payment_capability": {
+                    "can_make_payment": true,
+                    "has_wallet": true,
+                    "has_usdc_trustline": false,
+                    "has_sufficient_balance": true
+                }
             }));
         }
 
         let ticket_price = ticket_type.price.as_ref().unwrap().to_string().parse::<f64>()?;
-        let fee_breakdown = self.fee_calculator.get_fee_breakdown(ticket_price).await?;
 
-        // Check user's USDC balance
-        let has_sufficient_balance = if let Some(user_public_key) = &user.stellar_public_key {
-            self.stellar
-                .validate_usdc_payment(user_public_key, fee_breakdown.total_amount.parse::<f64>()?)
-                .await
-                .unwrap_or(false)
-        } else {
-            false
-        };
+        let payment_preview = self.payment_orchestrator
+            .get_payment_preview(&user, ticket_price)
+            .await?;
 
         Ok(serde_json::json!({
             "ticket_type": ticket_type.name,
-            "ticket_price": fee_breakdown.ticket_price,
-            "sponsorship_fee": fee_breakdown.sponsorship_fee,
-            "total_amount": fee_breakdown.total_amount,
-            "currency": fee_breakdown.currency,
-            "breakdown": fee_breakdown.breakdown_text,
-            "has_sufficient_balance": has_sufficient_balance,
-            "requires_usdc_trustline": user.stellar_public_key.is_some()
+            "ticket_price": payment_preview.ticket_price,
+            "sponsorship_fee": payment_preview.sponsorship_fee,
+            "total_amount": payment_preview.total_amount,
+            "currency": payment_preview.currency,
+            "breakdown": payment_preview.breakdown_text,
+            "payment_capability": {
+                "can_make_payment": payment_preview.payment_capability.can_make_payment,
+                "has_wallet": payment_preview.payment_capability.has_wallet,
+                "has_usdc_trustline": payment_preview.payment_capability.has_usdc_trustline,
+                "has_sufficient_balance": payment_preview.payment_capability.has_sufficient_balance,
+                "usdc_balance": payment_preview.payment_capability.usdc_balance,
+                "errors": payment_preview.payment_capability.errors,
+                "warnings": payment_preview.payment_capability.warnings
+            }
         }))
-    }
-
-    pub async fn create_usdc_trustline_for_user(&self, user_id: Uuid) -> Result<String> {
-        let user = User::find_by_id(&self.pool, user_id)
-            .await?
-            .ok_or_else(|| anyhow!("User not found"))?;
-
-        let encrypted_secret = user
-            .stellar_secret_key_encrypted
-            .clone()
-            .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
-
-        let crypto = crate::services::crypto::KeyEncryption::new()
-            .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
-        let user_secret_key = crypto
-            .decrypt_secret_key(&encrypted_secret)
-            .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
-
-        let tx_hash = self.stellar.create_usdc_trustline(&user_secret_key).await?;
-
-        info!("✅ USDC trustline created for user {}: {}", user_id, tx_hash);
-        Ok(tx_hash)
     }
 
     pub async fn get_ticket_status_with_context(
@@ -843,6 +860,81 @@ impl TicketService {
         Ok(ticket)
     }
 
+    async fn decrease_remaining_in_transaction<'a>(
+        &self,
+        tx: &mut SqlxTransaction<'a, Postgres>,
+        ticket_type: &TicketType,
+    ) -> Result<TicketType> {
+        match ticket_type.remaining {
+            Some(remaining) => {
+                if remaining > 0 {
+                    let row = sqlx::query!(
+                        r#"
+                    UPDATE ticket_types
+                    SET remaining = remaining - 1, updated_at = $1
+                    WHERE id = $2
+                    RETURNING *
+                    "#,
+                        Utc::now(),
+                        ticket_type.id
+                    )
+                    .fetch_one(&mut **tx)
+                    .await?;
+
+                    let updated_ticket_type = TicketType {
+                        id: row.id,
+                        event_id: row.event_id,
+                        name: row.name,
+                        description: row.description,
+                        is_free: row.is_free,
+                        price: row.price,
+                        currency: row.currency,
+                        total_supply: row.total_supply,
+                        remaining: row.remaining,
+                        is_active: row.is_active,
+                        created_at: row.created_at,
+                        updated_at: row.updated_at,
+                    };
+
+                    Ok(updated_ticket_type)
+                } else {
+                    Err(anyhow!("No tickets remaining"))
+                }
+            }
+            None => {
+                let row = sqlx::query!(
+                    r#"
+                UPDATE ticket_types
+                SET updated_at = $1
+                WHERE id = $2
+                RETURNING *
+                "#,
+                    Utc::now(),
+                    ticket_type.id
+                )
+                .fetch_one(&mut **tx)
+                .await?;
+
+                let updated_ticket_type = TicketType {
+                    id: row.id,
+                    event_id: row.event_id,
+                    name: row.name,
+                    description: row.description,
+                    is_free: row.is_free,
+                    price: row.price,
+                    currency: row.currency,
+                    total_supply: row.total_supply,
+                    remaining: row.remaining,
+                    is_active: row.is_active,
+                    created_at: row.created_at,
+                    updated_at: row.updated_at,
+                };
+
+                Ok(updated_ticket_type)
+            }
+        }
+    }
+
     async fn create_transaction_in_transaction<'a>(
         &self,
         tx: &mut SqlxTransaction<'a, Postgres>,
@@ -926,81 +1018,6 @@ impl TicketService {
         Ok(transaction)
     }
 
-    async fn decrease_remaining_in_transaction<'a>(
-        &self,
-        tx: &mut SqlxTransaction<'a, Postgres>,
-        ticket_type: &TicketType,
-    ) -> Result<TicketType> {
-        match ticket_type.remaining {
-            Some(remaining) => {
-                if remaining > 0 {
-                    let row = sqlx::query!(
-                        r#"
-                    UPDATE ticket_types
-                    SET remaining = remaining - 1, updated_at = $1
-                    WHERE id = $2
-                    RETURNING *
-                    "#,
-                        Utc::now(),
-                        ticket_type.id
-                    )
-                    .fetch_one(&mut **tx)
-                    .await?;
-
-                    let updated_ticket_type = TicketType {
-                        id: row.id,
-                        event_id: row.event_id,
-                        name: row.name,
-                        description: row.description,
-                        is_free: row.is_free,
-                        price: row.price,
-                        currency: row.currency,
-                        total_supply: row.total_supply,
-                        remaining: row.remaining,
-                        is_active: row.is_active,
-                        created_at: row.created_at,
-                        updated_at: row.updated_at,
-                    };
-
-                    Ok(updated_ticket_type)
-                } else {
-                    Err(anyhow!("No tickets remaining"))
-                }
-            }
-            None => {
-                let row = sqlx::query!(
-                    r#"
-                UPDATE ticket_types
-                SET updated_at = $1
-                WHERE id = $2
-                RETURNING *
-                "#,
-                    Utc::now(),
-                    ticket_type.id
-                )
-                .fetch_one(&mut **tx)
-                .await?;
-
-                let updated_ticket_type = TicketType {
-                    id: row.id,
-                    event_id: row.event_id,
-                    name: row.name,
-                    description: row.description,
-                    is_free: row.is_free,
-                    price: row.price,
-                    currency: row.currency,
-                    total_supply: row.total_supply,
-                    remaining: row.remaining,
-                    is_active: row.is_active,
-                    created_at: row.created_at,
-                    updated_at: row.updated_at,
-                };
-
-                Ok(updated_ticket_type)
-            }
-        }
-    }
-
     async fn update_ticket_status_in_transaction<'a>(
         &self,
         tx: &mut SqlxTransaction<'a, Postgres>,
@@ -1037,41 +1054,6 @@ impl TicketService {
 
         Ok(ticket)
     }
-
-    #[allow(unused_variables)]
-async fn process_payment(
-    &self,
-    user: &User,
-    ticket_type: &TicketType,
-    transaction: &Transaction,
-) -> Result<String> {
-    let platform_wallet = env::var("PLATFORM_WALLET_PUBLIC_KEY")
-        .map_err(|_| anyhow!("Platform wallet not configured"))?;
-
-    // Get sponsor account for gas fees
-    let sponsor_info = self.sponsor_manager.get_available_sponsor().await?;
-
-    let encrypted_secret = user
-        .stellar_secret_key_encrypted
-        .clone()
-        .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
-
-    let crypto = crate::services::crypto::KeyEncryption::new()
-        .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
-    let user_secret_key = crypto
-        .decrypt_secret_key(&encrypted_secret)
-        .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
-
-    let amount = transaction.amount.to_string();
-    
-    // Use the 4-argument version of send_payment with sponsor
-    let payment_result = self
-        .stellar
-        .send_payment(&user_secret_key, &platform_wallet, &amount, &sponsor_info.secret_key)
-        .await?;
-
-    Ok(payment_result.transaction_hash)
-}
 
     fn generate_qr_code(&self, data: &str) -> Result<String> {
         let code = QrCode::new(data.as_bytes())?;
@@ -1117,14 +1099,14 @@ async fn process_payment(
                 .map_err(|_| anyhow!("NFT issuer not configured"))?;
 
             if let Some(public_key) = &owner.stellar_public_key {
-                let is_valid = self
-                    .stellar
-                    .verify_nft_ownership(public_key, nft_id, &issuer_public_key)
-                    .await?;
+                // let is_valid = self
+                //     .stellar
+                    // .verify_nft_ownership(public_key, nft_id, &issuer_public_key)
+                    // .await?;
 
-                if !is_valid {
-                    return Ok(false);
-                }
+                // if !is_valid {
+                //     return Ok(false);
+                // }
             } else {
                 return Ok(false);
             }
@@ -1276,57 +1258,7 @@ async fn process_payment(
         Ok(())
     }
 
-    pub async fn convert_to_nft(&self, ticket_id: Uuid) -> Result<Ticket> {
-        let ticket = Ticket::find_by_id(&self.pool, ticket_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket not found"))?;
-
-        if ticket.status != "valid" {
-            return Err(anyhow!("Only valid tickets can be converted to NFTs"));
-        }
-
-        if ticket.nft_identifier.is_some() {
-            return Err(anyhow!("Ticket is already an NFT"));
-        }
-
-        let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket type not found"))?;
-
-        let user = User::find_by_id(&self.pool, ticket.owner_id)
-            .await?
-            .ok_or_else(|| anyhow!("User not found"))?;
-
-        let issuer_secret_key =
-            env::var("NFT_ISSUER_SECRET_KEY").map_err(|_| anyhow!("NFT issuer not configured"))?;
-
-        let asset_code = format!(
-            "TKT{}",
-            ticket
-                .id
-                .to_string()
-                .replace("-", "")
-                .chars()
-                .take(12)
-                .collect::<String>()
-        );
-
-        let user_public_key = user
-            .stellar_public_key
-            .clone()
-            .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
-
-        let tx_hash = self
-            .stellar
-            .issue_nft_asset(&issuer_secret_key, &asset_code, &user_public_key)
-            .await?;
-
-        let updated_ticket = ticket.set_nft_identifier(&self.pool, &asset_code).await?;
-
-        Ok(updated_ticket)
-    }
-
-    pub async fn transfer_ticket(
+     pub async fn transfer_ticket(
         &self,
         ticket_id: Uuid,
         from_user_id: Uuid,
@@ -1349,38 +1281,6 @@ async fn process_payment(
             .ok_or_else(|| anyhow!("Recipient user not found"))?;
 
         let mut tx = self.pool.begin().await?;
-
-        // If it's an NFT ticket, handle on chain
-        if let Some(nft_id) = &ticket.nft_identifier {
-            let from_user = User::find_by_id(&self.pool, from_user_id)
-                .await?
-                .ok_or_else(|| anyhow!("Sender user not found"))?;
-
-            let encrypted_secret = from_user
-                .stellar_secret_key_encrypted
-                .clone()
-                .ok_or_else(|| anyhow!("Sender has no Stellar wallet"))?;
-
-            let crypto = crate::services::crypto::KeyEncryption::new()
-                .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
-            let from_secret = crypto
-                .decrypt_secret_key(&encrypted_secret)
-                .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
-
-            let to_public = to_user
-                .stellar_public_key
-                .clone()
-                .ok_or_else(|| anyhow!("Recipient has no Stellar wallet"))?;
-
-            let issuer_public_key = env::var("NFT_ISSUER_PUBLIC_KEY")
-                .map_err(|_| anyhow!("NFT issuer not configured"))?;
-
-            // Transfer the NFT on the blockchain
-            self.stellar
-                .transfer_nft(&from_secret, &to_public, nft_id, &issuer_public_key)
-                .await?;
-        }
-
         let updated_ticket = ticket.update_owner(&self.pool, to_user_id).await?;
 
         tx.commit().await?;
@@ -1406,89 +1306,6 @@ async fn process_payment(
 
         Ok(updated_ticket)
     }
-
-    // pub async fn cancel_ticket(&self, ticket_id: Uuid, user_id: Uuid) -> Result<Ticket> {
-    //     let mut tx = self.pool.begin().await?;
-
-    //     let row = sqlx::query!("SELECT * FROM tickets WHERE id = $1 FOR UPDATE", ticket_id)
-    //         .fetch_optional(&mut *tx)
-    //         .await?
-    //         .ok_or_else(|| anyhow!("Ticket not found"))?;
-
-    //     let ticket = Ticket {
-    //         id: row.id,
-    //         ticket_type_id: row.ticket_type_id,
-    //         owner_id: row.owner_id,
-    //         status: row.status,
-    //         qr_code: row.qr_code,
-    //         nft_identifier: row.nft_identifier,
-    //         created_at: row.created_at,
-    //         updated_at: row.updated_at,
-    //         checked_in_at: row.checked_in_at,
-    //         checked_in_by: row.checked_in_by,
-    //         pdf_url: row.pdf_url,
-    //     };
-
-    //     if ticket.owner_id != user_id {
-    //         return Err(anyhow!("You don't own this ticket"));
-    //     }
-
-    //     if ticket.status != "valid" {
-    //         return Err(anyhow!(
-    //             "Ticket cannot be cancelled (status: {})",
-    //             ticket.status
-    //         ));
-    //     }
-
-    //     let updated_ticket = self
-    //         .update_ticket_status_in_transaction(&mut tx, &ticket, "cancelled")
-    //         .await?;
-
-    //     let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
-    //         .await?
-    //         .ok_or_else(|| anyhow!("Ticket type not found"))?;
-
-    //     if ticket_type.remaining.is_some() {
-    //         ticket_type.increase_remaining(&self.pool, 1).await?;
-    //     }
-
-    //     let transaction = Transaction::find_by_ticket(&self.pool, ticket_id).await?;
-    //     if let Some(tx_record) = transaction {
-    //         if tx_record.status == "completed" && tx_record.amount.is_positive() {
-    //             let refund_secret_key = env::var("PLATFORM_REFUND_SECRET_KEY")
-    //                 .map_err(|_| anyhow!("Refund account not configured"))?;
-
-    //             let user = User::find_by_id(&self.pool, user_id)
-    //                 .await?
-    //                 .ok_or_else(|| anyhow!("User not found"))?;
-
-    //             let user_public_key = user
-    //                 .stellar_public_key
-    //                 .clone()
-    //                 .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
-
-    //             let refund_hash = self
-    //                 .stellar
-    //                 .process_refund(
-    //                     &refund_secret_key,
-    //                     &user_public_key,
-    //                     &tx_record.amount.to_string(),
-    //                 )
-    //                 .await?;
-
-    //             tx_record
-    //                 .process_refund(&self.pool, None, Some("Ticket cancelled".to_string()))
-    //                 .await?;
-    //             tx_record
-    //                 .update_refund_hash(&self.pool, &refund_hash)
-    //                 .await?;
-    //         }
-    //     }
-
-    //     tx.commit().await?;
-
-    //     Ok(updated_ticket)
-    // }
 
     pub async fn admin_cancel_ticket(
         &self,
@@ -1604,6 +1421,210 @@ async fn process_payment(
 
         Ok(result)
     }
+
+    // #[allow(unused_variables)]
+// async fn process_payment(
+//     &self,
+//     user: &User,
+//     ticket_type: &TicketType,
+//     transaction: &Transaction,
+// ) -> Result<String> {
+//     let platform_wallet = env::var("PLATFORM_WALLET_PUBLIC_KEY")
+//         .map_err(|_| anyhow!("Platform wallet not configured"))?;
+
+//     // Get sponsor account for gas fees
+//     let sponsor_info = self.sponsor_manager.get_available_sponsor().await?;
+
+//     let encrypted_secret = user
+//         .stellar_secret_key_encrypted
+//         .clone()
+//         .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
+
+//     let crypto = crate::services::crypto::KeyEncryption::new()
+//         .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
+//     let user_secret_key = crypto
+//         .decrypt_secret_key(&encrypted_secret)
+//         .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
+
+//     let amount = transaction.amount.to_string();
+    
+//     // Use the 4-argument version of send_payment with sponsor
+//     let payment_result = self
+//         .stellar
+//         .send_payment(&user_secret_key, &platform_wallet, &amount, &sponsor_info.secret_key)
+//         .await?;
+
+//     Ok(payment_result.transaction_hash)
+// }
+
+    // pub async fn convert_to_nft(&self, ticket_id: Uuid) -> Result<Ticket> {
+    //     let ticket = Ticket::find_by_id(&self.pool, ticket_id)
+    //         .await?
+    //         .ok_or_else(|| anyhow!("Ticket not found"))?;
+
+    //     if ticket.status != "valid" {
+    //         return Err(anyhow!("Only valid tickets can be converted to NFTs"));
+    //     }
+
+    //     if ticket.nft_identifier.is_some() {
+    //         return Err(anyhow!("Ticket is already an NFT"));
+    //     }
+
+    //     let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
+    //         .await?
+    //         .ok_or_else(|| anyhow!("Ticket type not found"))?;
+
+    //     let user = User::find_by_id(&self.pool, ticket.owner_id)
+    //         .await?
+    //         .ok_or_else(|| anyhow!("User not found"))?;
+
+    //     let issuer_secret_key =
+    //         env::var("NFT_ISSUER_SECRET_KEY").map_err(|_| anyhow!("NFT issuer not configured"))?;
+
+    //     let asset_code = format!(
+    //         "TKT{}",
+    //         ticket
+    //             .id
+    //             .to_string()
+    //             .replace("-", "")
+    //             .chars()
+    //             .take(12)
+    //             .collect::<String>()
+    //     );
+
+    //     let user_public_key = user
+    //         .stellar_public_key
+    //         .clone()
+    //         .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
+
+    //     let tx_hash = self
+    //         .stellar
+    //         .issue_nft_asset(&issuer_secret_key, &asset_code, &user_public_key)
+    //         .await?;
+
+    //     let updated_ticket = ticket.set_nft_identifier(&self.pool, &asset_code).await?;
+
+    //     Ok(updated_ticket)
+    // }
+
+   
+
+        // If it's an NFT ticket, handle on chain
+        // if let Some(nft_id) = &ticket.nft_identifier {
+        //     let from_user = User::find_by_id(&self.pool, from_user_id)
+        //         .await?
+        //         .ok_or_else(|| anyhow!("Sender user not found"))?;
+
+        //     let encrypted_secret = from_user
+        //         .stellar_secret_key_encrypted
+        //         .clone()
+        //         .ok_or_else(|| anyhow!("Sender has no Stellar wallet"))?;
+
+        //     let crypto = crate::services::crypto::KeyEncryption::new()
+        //         .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
+        //     let from_secret = crypto
+        //         .decrypt_secret_key(&encrypted_secret)
+        //         .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
+
+        //     let to_public = to_user
+        //         .stellar_public_key
+        //         .clone()
+        //         .ok_or_else(|| anyhow!("Recipient has no Stellar wallet"))?;
+
+        //     let issuer_public_key = env::var("NFT_ISSUER_PUBLIC_KEY")
+        //         .map_err(|_| anyhow!("NFT issuer not configured"))?;
+
+        //     // Transfer the NFT on the blockchain
+        //     self.stellar
+        //         .transfer_nft(&from_secret, &to_public, nft_id, &issuer_public_key)
+        //         .await?;
+        // }
+
+        
+
+    // pub async fn cancel_ticket(&self, ticket_id: Uuid, user_id: Uuid) -> Result<Ticket> {
+    //     let mut tx = self.pool.begin().await?;
+
+    //     let row = sqlx::query!("SELECT * FROM tickets WHERE id = $1 FOR UPDATE", ticket_id)
+    //         .fetch_optional(&mut *tx)
+    //         .await?
+    //         .ok_or_else(|| anyhow!("Ticket not found"))?;
+
+    //     let ticket = Ticket {
+    //         id: row.id,
+    //         ticket_type_id: row.ticket_type_id,
+    //         owner_id: row.owner_id,
+    //         status: row.status,
+    //         qr_code: row.qr_code,
+    //         nft_identifier: row.nft_identifier,
+    //         created_at: row.created_at,
+    //         updated_at: row.updated_at,
+    //         checked_in_at: row.checked_in_at,
+    //         checked_in_by: row.checked_in_by,
+    //         pdf_url: row.pdf_url,
+    //     };
+
+    //     if ticket.owner_id != user_id {
+    //         return Err(anyhow!("You don't own this ticket"));
+    //     }
+
+    //     if ticket.status != "valid" {
+    //         return Err(anyhow!(
+    //             "Ticket cannot be cancelled (status: {})",
+    //             ticket.status
+    //         ));
+    //     }
+
+    //     let updated_ticket = self
+    //         .update_ticket_status_in_transaction(&mut tx, &ticket, "cancelled")
+    //         .await?;
+
+    //     let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
+    //         .await?
+    //         .ok_or_else(|| anyhow!("Ticket type not found"))?;
+
+    //     if ticket_type.remaining.is_some() {
+    //         ticket_type.increase_remaining(&self.pool, 1).await?;
+    //     }
+
+    //     let transaction = Transaction::find_by_ticket(&self.pool, ticket_id).await?;
+    //     if let Some(tx_record) = transaction {
+    //         if tx_record.status == "completed" && tx_record.amount.is_positive() {
+    //             let refund_secret_key = env::var("PLATFORM_REFUND_SECRET_KEY")
+    //                 .map_err(|_| anyhow!("Refund account not configured"))?;
+
+    //             let user = User::find_by_id(&self.pool, user_id)
+    //                 .await?
+    //                 .ok_or_else(|| anyhow!("User not found"))?;
+
+    //             let user_public_key = user
+    //                 .stellar_public_key
+    //                 .clone()
+    //                 .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
+
+    //             let refund_hash = self
+    //                 .stellar
+    //                 .process_refund(
+    //                     &refund_secret_key,
+    //                     &user_public_key,
+    //                     &tx_record.amount.to_string(),
+    //                 )
+    //                 .await?;
+
+    //             tx_record
+    //                 .process_refund(&self.pool, None, Some("Ticket cancelled".to_string()))
+    //                 .await?;
+    //             tx_record
+    //                 .update_refund_hash(&self.pool, &refund_hash)
+    //                 .await?;
+    //         }
+    //     }
+
+    //     tx.commit().await?;
+
+    //     Ok(updated_ticket)
+    // }
+
 }
 
 // tests

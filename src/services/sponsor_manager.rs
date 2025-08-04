@@ -29,6 +29,8 @@ pub struct SponsorAccountInfo {
     pub current_balance: f64,
 }
 
+
+#[derive(Debug, Clone)]
 pub struct SponsorManager {
     pool: PgPool,
     stellar_service: crate::services::stellar::StellarService,

@@ -1,10 +1,10 @@
-use crate::middleware::auth::AuthenticatedUser;
+use crate::{middleware::auth::AuthenticatedUser, services::SponsorManager};
 use crate::models::user::User;
 use crate::services::stellar::StellarService;
 use crate::services::ticket::TicketService;
 use actix_web::{web, HttpResponse, Responder};
 use anyhow::Result;
-use log::{error, info};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use sqlx::PgPool;
@@ -371,29 +371,67 @@ pub async fn create_usdc_trustline(
                 });
             }
 
+            if user_profile.stellar_secret_key_encrypted.is_none() {
+                return HttpResponse::BadRequest().json(ErrorResponse {
+                    error: "User wallet is incomplete. Please contact support.".to_string(),
+                });
+            }
+
             let stellar = match StellarService::new() {
                 Ok(service) => service,
                 Err(e) => {
                     error!("Failed to initialize Stellar service: {}", e);
                     return HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to initialize service".to_string(),
+                        error: "Failed to initialize blockchain service".to_string(),
                     });
                 }
             };
 
-            let usdc_issuer = std::env::var("USDC_ISSUER_PUBLIC_KEY")
+            let usdc_issuer = std::env::var("TESTNET_USDC_ISSUER")
                 .unwrap_or_else(|_| "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5".to_string());
+
+            let sponsor_manager = match crate::services::sponsor_manager::SponsorManager::new(pool.get_ref().clone()) {
+                Ok(manager) => manager,
+                Err(e) => {
+                    error!("Failed to initialize sponsor manager: {}", e);
+                    return HttpResponse::InternalServerError().json(ErrorResponse {
+                        error: "Sponsorship service unavailable".to_string(),
+                    });
+                }
+            };
+
+            let sponsor_info = match sponsor_manager.get_available_sponsor().await {
+                Ok(sponsor) => sponsor,
+                Err(e) => {
+                    error!("Failed to get available sponsor: {}", e);
+                    return HttpResponse::InternalServerError().json(ErrorResponse {
+                        error: "No sponsor accounts available. Please try again later.".to_string(),
+                    });
+                }
+            };
+
 
             // Direct call - no wrapper needed!
             match stellar.create_asset_trustline(
                 &user_profile.stellar_secret_key_encrypted.unwrap(),
                 "USDC",
                 &usdc_issuer,
+                Some(&sponsor_info.secret_key),
             ).await {
                 Ok(tx_hash) => {
                     info!("USDC trustline created for user {}: {}", user.id, tx_hash);
+                    let gas_fee_xlm = stellar.sponsored_gas_fee();
+                    
+                    if let Err(e) = sponsor_manager.record_sponsorship_usage(
+                        &sponsor_info.public_key,
+                        gas_fee_xlm,
+                    ).await {
+                        warn!("Failed to record sponsor usage: {}", e);
+                    }
                     HttpResponse::Ok().json(serde_json::json!({
                         "success": true,
+                        "sponsored": true,
+                        "gas_fee_covered": format!("{:.7} XLM", gas_fee_xlm),
                         "message": "USDC trustline created successfully",
                         "transaction_hash": tx_hash,
                         "next_steps": [
@@ -422,6 +460,7 @@ pub async fn create_usdc_trustline(
         }
     }
 }
+
 
 pub async fn get_funding_instructions(
     pool: web::Data<sqlx::PgPool>,

@@ -229,7 +229,7 @@ pub async fn check_usdc_issuer_status(
     HttpResponse::Ok().json(serde_json::json!({
         "usdc_issuer_status": "operational",
         "last_checked": chrono::Utc::now(),
-        "issuer_public_key": std::env::var("USDC_ISSUER_PUBLIC_KEY").unwrap_or("Not configured".to_string()),
+        "issuer_public_key": std::env::var("TESTNET_USDC_ISSUER").unwrap_or("Not configured".to_string()),
         "network": std::env::var("STELLAR_NETWORK").unwrap_or("testnet".to_string())
     }))
 }

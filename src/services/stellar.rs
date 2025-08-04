@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
-use base64::{engine::general_purpose, Engine};
+use base64::Engine;
 use log::{error, info, warn};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::cell::RefCell;
 use std::env;
@@ -92,6 +92,8 @@ pub struct OrganizerPaymentResult {
     pub gas_fee_xlm: f64,
 }
 
+
+#[derive(Debug, Clone)]
 pub struct StellarService {
     horizon_url: String,
     is_testnet: bool,
@@ -139,12 +141,15 @@ impl StellarService {
 
     pub async fn create_asset_trustline(
         &self,
-        account_secret: &str,
+        encrypted_user_secret: &str,
         asset_code: &str,
         issuer_public_key: &str,
+        encrypted_sponsor_secret: Option<&str>,
     ) -> Result<String> {
+        let is_sponsored = encrypted_sponsor_secret.is_some();
         info!(
-            "🤝 Creating trustline for asset {} from issuer {}",
+            "🤝 Creating {} trustline for asset {} from issuer {}",
+            if is_sponsored { "sponsored" } else { "self-funded" },
             asset_code, issuer_public_key
         );
 
@@ -160,15 +165,32 @@ impl StellarService {
             ));
         }
 
-        let account_keypair = Keypair::from_secret(account_secret)
+        // ✅ Use your existing crypto service method
+        let crypto = crate::services::crypto::KeyEncryption::new()
+            .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
+        let user_secret_key = crypto
+            .decrypt_secret_key(encrypted_user_secret)
+            .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
+
+        let user_keypair = Keypair::from_secret(&user_secret_key)
             .map_err(|e| anyhow!("Invalid account secret key: {:?}", e))?;
 
+        let sponsor_keypair = if let Some(encrypted_sponsor_secret) = encrypted_sponsor_secret {
+            let sponsor_secret_key = crypto
+                .decrypt_secret_key(encrypted_sponsor_secret)
+                .map_err(|e| anyhow!("Failed to decrypt sponsor secret key: {}", e))?;
+            Some(Keypair::from_secret(&sponsor_secret_key)
+                .map_err(|e| anyhow!("Invalid sponsor secret key: {:?}", e))?)
+        } else {
+            None
+        };
+
         let sequence = self
-            .get_account_sequence(&account_keypair.public_key())
+            .get_account_sequence(&user_keypair.public_key())
             .await
             .map_err(|e| anyhow!("Failed to get account sequence: {}", e))?;
 
-        let account = Account::new(&account_keypair.public_key(), &sequence)
+        let account = Account::new(&user_keypair.public_key(), &sequence)
             .map_err(|e| anyhow!("Failed to create account object: {:?}", e))?;
 
         // Create asset
@@ -180,35 +202,89 @@ impl StellarService {
             .change_trust(asset, None)
             .map_err(|e| anyhow!("Failed to create change trust operation: {:?}", e))?;
 
-        // Build transaction (without fee sponsorship for trustlines)
+        let fee = if is_sponsored {
+            self.base_fee * 2
+        } else {
+            self.base_fee
+        };
+
+        let memo = if is_sponsored {
+            format!("Sponsored trustline for {} asset", asset_code)
+        } else {
+            format!("Trustline for {} asset", asset_code)
+        };
+
+        // Build transaction
         let mut transaction = TransactionBuilder::new(
             Rc::new(RefCell::new(account)),
             &self.network_passphrase,
-            None, // No time bounds for trustline creation
+            None,
         )
         .add_operation(operation)
-        .fee(self.base_fee)
-        .add_memo(&format!("Trustline for {} asset", asset_code))
+        .fee(fee)
+        .add_memo(&memo)
         .build();
 
-        transaction.sign(&[account_keypair]);
+        if let Some(sponsor_keypair) = sponsor_keypair {
+            transaction.sign(&[user_keypair, sponsor_keypair]);
+        } else {
+            transaction.sign(&[user_keypair]);
+        }
+
         let tx_hash = self
             .submit_transaction(&transaction)
             .await
             .map_err(|e| anyhow!("Failed to submit trustline transaction: {}", e))?;
 
         info!(
-            "✅ Trustline created successfully for {}: {}",
+            "✅ {} trustline created successfully for {}: {}",
+            if is_sponsored { "Sponsored" } else { "Self-funded" },
             asset_code, tx_hash
         );
         Ok(tx_hash)
     }
 
-    /// Create USDC trustline
-    pub async fn create_usdc_trustline(&self, account_secret: &str) -> Result<String> {
-        info!("🤝 Creating USDC trustline using generic method");
-        self.create_asset_trustline(account_secret, "USDC", &self.usdc_issuer)
-            .await
+    /// Create USDC trustline (without sponsorship)
+    pub async fn create_usdc_trustline(&self, encrypted_account_secret: &str) -> Result<String> {
+        info!("🪙 Creating self-funded USDC trustline");
+        
+        self.create_asset_trustline(
+            encrypted_account_secret,
+            "USDC", 
+            &self.usdc_issuer,
+            None,
+        )
+        .await
+    }
+
+    pub async fn has_usdc_trustline(&self, public_key: &str) -> Result<bool> {
+        match self.get_account_balances(public_key).await {
+            Ok(balances) => {
+                for balance in balances {
+                    if balance.asset_type == "credit_alphanum4"
+                        && balance.asset_code.as_deref() == Some("USDC")
+                        && balance.asset_issuer.as_deref() == Some(&self.usdc_issuer)
+                    {
+                        return Ok(true);
+                    }
+                }
+                Ok(false) // Account exists but no USDC trustline
+            }
+            Err(e) => {
+                // ✅ Proper error handling - don't swallow errors
+                if e.to_string().contains("404") || e.to_string().contains("not found") {
+                    // Account doesn't exist = no trustline
+                    Ok(false)
+                } else {
+                    // Real error (network, etc.) - propagate it
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    pub fn sponsored_gas_fee(&self) -> f64 {
+        (self.base_fee * 2) as f64 / 10_000_000.0
     }
 
     // ===== USDC ASSET METHODS =====
@@ -231,55 +307,12 @@ impl StellarService {
             }
         }
 
+        // ✅ Specific error - trustline doesn't exist
         Err(anyhow!(
-            "No USDC balance found - account may need USDC trustline"
+            "No USDC trustline found for account {}. Please create USDC trustline first.",
+            public_key
         ))
     }
-
-    /// Create USDC trustline for an account
-    // pub async fn create_usdc_trustline(&self, account_secret: &str) -> Result<String> {
-    //     info!("🤝 Creating USDC trustline for account");
-
-    //     let keypair = Keypair::from_secret(account_secret)
-    //         .map_err(|e| anyhow!("Invalid secret key: {:?}", e))?;
-
-    //     let sequence = self.get_account_sequence(&keypair.public_key()).await?;
-    //     let account = Account::new(&keypair.public_key(), &sequence)
-    //         .map_err(|e| anyhow!("Failed to create account object: {:?}", e))?;
-
-    //     let usdc_asset = self.get_usdc_asset()?;
-
-    //     let operation = Operation::new()
-    //         .change_trust(usdc_asset, None)
-    //         .map_err(|e| anyhow!("Failed to create change trust operation: {:?}", e))?;
-
-    //     let mut transaction = TransactionBuilder::new(
-    //         Rc::new(RefCell::new(account)),
-    //         &self.network_passphrase,
-    //         None,
-    //     )
-    //     .add_operation(operation)
-    //     .fee(self.base_fee)
-    //     .add_memo("USDC Trustline Creation")
-    //     .build();
-
-    //     transaction.sign(&[keypair]);
-    //     let tx_hash = self.submit_transaction(&transaction).await?;
-
-    //     info!("✅ USDC trustline created successfully: {}", tx_hash);
-    //     Ok(tx_hash)
-    // }
-
-    // pub fn create_new_account(&self) -> Result<(String, String)> {
-    //     info!("🆕 Creating new Stellar account (generating keypair)");
-
-    //     let (public_key, secret_key) = self.generate_keypair()?;
-
-    //     info!("✅ New account created: {}", public_key);
-    //     info!("💡 Account is not active until funded. Use fund_testnet_account() for testnet.");
-
-    //     Ok((public_key, secret_key))
-    // }
 
     pub fn generate_keypair(&self) -> Result<(String, String)> {
         let keypair = Keypair::random()
@@ -455,17 +488,14 @@ impl StellarService {
         &self,
         platform_secret: &str,
         recipient_public: &str,
-        usdc_amount: &str,
+        usdc_amount: f64,
     ) -> Result<OrganizerPaymentResult> {
         info!(
             "💰 Sending platform USDC payment: {} USDC to {}",
             usdc_amount, recipient_public
         );
 
-        let amount_f64: f64 = usdc_amount
-            .parse()
-            .map_err(|e| anyhow!("Invalid USDC amount '{}': {}", usdc_amount, e))?;
-        let stroops = (amount_f64 * 10_000_000.0) as i64;
+        let stroops = (usdc_amount * 10_000_000.0) as i64;
 
         if stroops <= 0 {
             return Err(anyhow!("Payment amount must be greater than 0"));
@@ -517,7 +547,7 @@ impl StellarService {
 
         let result = OrganizerPaymentResult {
             transaction_hash: tx_hash.clone(),
-            usdc_amount_sent: amount_f64,
+            usdc_amount_sent: usdc_amount,
             gas_fee_xlm,
         };
 
@@ -567,7 +597,7 @@ impl StellarService {
 
             if result.successful {
                 info!(
-                    "✅ REAL transaction submitted successfully to Stellar network: {}",
+                    "✅ Transaction submitted successfully to Stellar network: {}",
                     result.hash
                 );
                 Ok(result.hash)
@@ -733,249 +763,6 @@ impl StellarService {
         }
     }
 
-    // This allows the receiver to hold the custom asset (NFT).
-    // pub async fn create_trustline(
-    //     &self,
-    //     receiver_secret: &str,
-    //     asset_code: &str,
-    //     issuer_public: &str,
-    // ) -> Result<String> {
-    //     info!(
-    //         "🤝 Creating trustline for asset {} from issuer {}",
-    //         asset_code, issuer_public
-    //     );
-
-    //     let receiver_keypair = Keypair::from_secret(receiver_secret)
-    //         .map_err(|e| anyhow!("Invalid receiver secret key: {:?}", e))?;
-
-    //     let sequence = self
-    //         .get_account_sequence(&receiver_keypair.public_key())
-    //         .await?;
-    //     let receiver_account = Account::new(&receiver_keypair.public_key(), &sequence)
-    //         .map_err(|e| anyhow!("Failed to create account object: {:?}", e))?;
-
-    //     // Create custom asset
-    //     let custom_asset = Asset::new(asset_code, Some(issuer_public))
-    //         .map_err(|e| anyhow!("Failed to create custom asset: {:?}", e))?;
-
-    //     // Create change trust operation
-    //     let operation = Operation::new()
-    //         .change_trust(custom_asset, None)
-    //         .map_err(|e| anyhow!("Failed to create change trust operation: {:?}", e))?;
-
-    //     let mut transaction = TransactionBuilder::new(
-    //         Rc::new(RefCell::new(receiver_account)),
-    //         &self.network_passphrase,
-    //         None,
-    //     )
-    //     .add_operation(operation)
-    //     .fee(self.base_fee)
-    //     .add_memo(&format!("Trustline for {}", asset_code))
-    //     .build();
-
-    //     transaction.sign(&[receiver_keypair]);
-    //     let tx_hash = self.submit_transaction(&transaction).await?;
-
-    //     info!("✅ Trustline created successfully: {}", tx_hash);
-    //     Ok(tx_hash)
-    // }
-
-    // The receiver must have a trustline for this asset first.
-    pub async fn issue_custom_asset(
-        &self,
-        issuer_secret: &str,
-        receiver_public: &str,
-        asset_code: &str,
-        amount: &str,
-    ) -> Result<String> {
-        info!(
-            "🪙 Issuing {} units of {} from issuer to {}",
-            amount, asset_code, receiver_public
-        );
-
-        let asset_amount: f64 = amount.parse()?;
-        let stroops = (asset_amount * 10_000_000.0) as i64;
-
-        let issuer_keypair = Keypair::from_secret(issuer_secret)
-            .map_err(|e| anyhow!("Invalid issuer secret key: {:?}", e))?;
-
-        let sequence = self
-            .get_account_sequence(&issuer_keypair.public_key())
-            .await?;
-        let issuer_account = Account::new(&issuer_keypair.public_key(), &sequence)
-            .map_err(|e| anyhow!("Failed to create account object: {:?}", e))?;
-
-        // Create custom asset
-        let custom_asset = Asset::new(asset_code, Some(&issuer_keypair.public_key()))
-            .map_err(|e| anyhow!("Failed to create custom asset: {:?}", e))?;
-
-        // Create payment op to issues the asset
-        let operation = Operation::new()
-            .payment(receiver_public, &custom_asset, stroops)
-            .map_err(|e| anyhow!("Failed to create payment operation: {:?}", e))?;
-
-        let mut transaction = TransactionBuilder::new(
-            Rc::new(RefCell::new(issuer_account)),
-            &self.network_passphrase,
-            None,
-        )
-        .add_operation(operation)
-        .fee(self.base_fee)
-        .add_memo(&format!("Issue {} {}", amount, asset_code))
-        .build();
-
-        transaction.sign(&[issuer_keypair]);
-        let tx_hash = self.submit_transaction(&transaction).await?;
-
-        info!("✅ Asset issued successfully: {}", tx_hash);
-        Ok(tx_hash)
-    }
-
-    // process for creating an NFT on Stellar.
-    pub async fn create_nft(
-        &self,
-        issuer_secret: &str,
-        receiver_secret: &str,
-        nft_code: &str,
-    ) -> Result<(String, String)> {
-        info!("🎨 Creating NFT {} - complete process", nft_code);
-
-        let issuer_keypair = Keypair::from_secret(issuer_secret)
-            .map_err(|e| anyhow!("Invalid issuer secret key: {:?}", e))?;
-        let receiver_keypair = Keypair::from_secret(receiver_secret)
-            .map_err(|e| anyhow!("Invalid receiver secret key: {:?}", e))?;
-
-        info!("📝 Step 1: Creating trustline...");
-        let trustline_tx = self
-            .create_asset_trustline(receiver_secret, nft_code, &issuer_keypair.public_key())
-            .await?;
-
-        info!("💰 Step 2: Issuing NFT...");
-        let issue_tx = self
-            .issue_custom_asset(
-                issuer_secret,
-                &receiver_keypair.public_key(),
-                nft_code,
-                "1.0",
-            )
-            .await?;
-
-        info!("✅ NFT {} created successfully!", nft_code);
-        info!("   Trustline TX: {}", trustline_tx);
-        info!("   Issue TX: {}", issue_tx);
-
-        Ok((trustline_tx, issue_tx))
-    }
-
-    // new owner must have a trustline for this asset.
-    pub async fn transfer_nft_with_amount(
-        &self,
-        sender_secret: &str,
-        receiver_public: &str,
-        nft_code: &str,
-        issuer_public: &str,
-        amount: &str,
-    ) -> Result<String> {
-        info!(
-            "🔄 Transferring {} units of NFT {} from current owner to {}",
-            amount, nft_code, receiver_public
-        );
-
-        let asset_amount: f64 = amount.parse()?;
-        let stroops = (asset_amount * 10_000_000.0) as i64;
-
-        let sender_keypair = Keypair::from_secret(sender_secret)
-            .map_err(|e| anyhow!("Invalid sender secret key: {:?}", e))?;
-
-        let sequence = self
-            .get_account_sequence(&sender_keypair.public_key())
-            .await?;
-        let sender_account = Account::new(&sender_keypair.public_key(), &sequence)
-            .map_err(|e| anyhow!("Failed to create account object: {:?}", e))?;
-
-        // Create custom asset ref
-        let nft_asset = Asset::new(nft_code, Some(issuer_public))
-            .map_err(|e| anyhow!("Failed to create NFT asset: {:?}", e))?;
-
-        // Create payment op for the NFT transfer
-        let operation = Operation::new()
-            .payment(receiver_public, &nft_asset, stroops)
-            .map_err(|e| anyhow!("Failed to create NFT transfer operation: {:?}", e))?;
-
-        let mut transaction = TransactionBuilder::new(
-            Rc::new(RefCell::new(sender_account)),
-            &self.network_passphrase,
-            None,
-        )
-        .add_operation(operation)
-        .fee(self.base_fee)
-        .add_memo(&format!("Transfer NFT {}", nft_code))
-        .build();
-
-        transaction.sign(&[sender_keypair]);
-        let tx_hash = self.submit_transaction(&transaction).await?;
-
-        info!("✅ NFT transferred successfully: {}", tx_hash);
-        Ok(tx_hash)
-    }
-
-    pub async fn transfer_nft(
-        &self,
-        sender_secret: &str,
-        receiver_public: &str,
-        nft_code: &str,
-        issuer_public: &str,
-    ) -> Result<String> {
-        self.transfer_nft_with_amount(
-            sender_secret,
-            receiver_public,
-            nft_code,
-            issuer_public,
-            "1.0",
-        )
-        .await
-    }
-
-    /// Creates trustline for NFT and then transfers it (for new NFT owners).
-    pub async fn transfer_nft_with_trustline(
-        &self,
-        sender_secret: &str,
-        receiver_secret: &str,
-        nft_code: &str,
-        issuer_public: &str,
-        amount: &str,
-    ) -> Result<(String, String)> {
-        info!(
-            "🎯 Complete NFT transfer with trustline creation for {}",
-            nft_code
-        );
-
-        let receiver_keypair = Keypair::from_secret(receiver_secret)
-            .map_err(|e| anyhow!("Invalid receiver secret key: {:?}", e))?;
-
-        info!("📝 Step 1: Creating trustline for receiver...");
-        let trustline_tx = self
-            .create_asset_trustline(receiver_secret, nft_code, issuer_public)
-            .await?;
-
-        info!("🔄 Step 2: Transferring NFT...");
-        let transfer_tx = self
-            .transfer_nft_with_amount(
-                sender_secret,
-                &receiver_keypair.public_key(),
-                nft_code,
-                issuer_public,
-                amount,
-            )
-            .await?;
-
-        info!("✅ NFT transfer completed!");
-        info!("   Trustline TX: {}", trustline_tx);
-        info!("   Transfer TX: {}", transfer_tx);
-
-        Ok((trustline_tx, transfer_tx))
-    }
-
     pub fn get_network_info(&self) -> (String, bool) {
         (self.horizon_url.clone(), self.is_testnet)
     }
@@ -1053,74 +840,6 @@ impl StellarService {
         }
     }
 
-    pub async fn issue_nft_asset(
-        &self,
-        issuer_secret: &str,
-        asset_code: &str,
-        receiver_secret: &str,
-    ) -> Result<(String, String)> {
-        info!("🎨 Issuing NFT asset {} (using create_nft)", asset_code);
-        self.create_nft(issuer_secret, receiver_secret, asset_code)
-            .await
-    }
-
-    pub async fn verify_nft_ownership(
-        &self,
-        account_public: &str,
-        nft_code: &str,
-        issuer_public: &str,
-    ) -> Result<bool> {
-        info!(
-            "🔍 Verifying NFT ownership: {} owns {} from {}",
-            account_public, nft_code, issuer_public
-        );
-
-        let balances = self.get_account_balances(account_public).await?;
-
-        for balance in balances {
-            if balance.asset_type != "native" {
-                if let (Some(code), Some(issuer)) = (&balance.asset_code, &balance.asset_issuer) {
-                    if code == nft_code && issuer == issuer_public {
-                        let amount: f64 = balance.balance.parse().unwrap_or(0.0);
-                        info!(
-                            "✅ NFT ownership verified: {} owns {} units",
-                            account_public, amount
-                        );
-                        return Ok(amount > 0.0);
-                    }
-                }
-            }
-        }
-
-        info!("❌ NFT ownership not found");
-        Ok(false)
-    }
-
-    pub async fn transfer_nft_simple(
-        &self,
-        sender_secret: &str,
-        receiver_public: &str,
-        nft_code: &str,
-        issuer_public: &str,
-    ) -> Result<String> {
-        self.transfer_nft(sender_secret, receiver_public, nft_code, issuer_public)
-            .await
-    }
-
-    // This delegates to the event service for proper business logic separation
-    // pub async fn process_refund(
-    //     &self,
-    //     refund_secret_key: &str,
-    //     user_public_key: &str,
-    //     refund_amount: &str,
-    // ) -> Result<String> {
-    //     info!("💸 Processing refund via StellarService (delegating to payment logic)");
-
-    //     // For now, just use direct payment - in the future this could delegate to EventService
-    //     self.send_payment(refund_secret_key, user_public_key, refund_amount)
-    //         .await
-    // }
-
     pub async fn has_stellar_wallet(&self, public_key: Option<&str>) -> Result<bool> {
         match public_key {
             Some(key) if !key.is_empty() => {
@@ -1176,15 +895,15 @@ impl StellarService {
         Ok(true)
     }
 
-    // this is what ticket purchase should use instead of direct field checks
-    pub fn can_make_purchases(
-        &self,
-        stellar_public_key: Option<&str>,
-        stellar_secret_key_encrypted: Option<&str>,
-    ) -> bool {
-        self.validate_user_wallet(stellar_public_key, stellar_secret_key_encrypted)
-            .unwrap_or(false)
-    }
+    // this is what ticket purchase should use instead of direct field checks but this is redundant atm
+    // pub fn can_make_purchases(
+    //     &self,
+    //     stellar_public_key: Option<&str>,
+    //     stellar_secret_key_encrypted: Option<&str>,
+    // ) -> bool {
+    //     self.validate_user_wallet(stellar_public_key, stellar_secret_key_encrypted)
+    //         .unwrap_or(false)
+    // }
 
     //validate wallet and get balance in one call
     pub async fn get_wallet_info(&self, public_key: Option<&str>) -> Result<Option<(String, f64)>> {
@@ -1202,64 +921,64 @@ impl StellarService {
         }
     }
 
-    pub async fn pay_event_organizer(
-        &self,
-        platform_secret_key: &str,
-        organizer_wallet: &str,
-        total_revenue_usdc: f64,
-        platform_fee_percentage: f64,
-    ) -> Result<String> {
-        info!(
-            "💰 Paying organizer: {} USDC total revenue, {}% platform fee",
-            total_revenue_usdc, platform_fee_percentage
-        );
+    // pub async fn pay_event_organizer(
+    //     &self,
+    //     platform_secret_key: &str,
+    //     organizer_wallet: &str,
+    //     total_revenue_usdc: f64,
+    //     platform_fee_percentage: f64,
+    // ) -> Result<String> {
+    //     info!(
+    //         "💰 Paying organizer: {} USDC total revenue, {}% platform fee",
+    //         total_revenue_usdc, platform_fee_percentage
+    //     );
 
-        // Calculate organizer payout (revenue minus platform fee)
-        let platform_fee = total_revenue_usdc * (platform_fee_percentage / 100.0);
-        let organizer_payout = total_revenue_usdc - platform_fee;
+    //     // Calculate organizer payout (revenue minus platform fee)
+    //     let platform_fee = total_revenue_usdc * (platform_fee_percentage / 100.0);
+    //     let organizer_payout = total_revenue_usdc - platform_fee;
 
-        if organizer_payout <= 0.0 {
-            return Err(anyhow!("Invalid payout amount: {}", organizer_payout));
-        }
+    //     if organizer_payout <= 0.0 {
+    //         return Err(anyhow!("Invalid payout amount: {}", organizer_payout));
+    //     }
 
-        // Convert to stroops
-        let payout_stroops = (organizer_payout * 10_000_000.0) as i64;
+    //     // Convert to stroops
+    //     let payout_stroops = (organizer_payout * 10_000_000.0) as i64;
 
-        let platform_keypair = Keypair::from_secret(platform_secret_key)
-            .map_err(|e| anyhow!("Invalid platform secret key: {:?}", e))?;
+    //     let platform_keypair = Keypair::from_secret(platform_secret_key)
+    //         .map_err(|e| anyhow!("Invalid platform secret key: {:?}", e))?;
 
-        let sequence = self
-            .get_account_sequence(&platform_keypair.public_key())
-            .await?;
-        let platform_account = Account::new(&platform_keypair.public_key(), &sequence)
-            .map_err(|e| anyhow!("Failed to create platform account object: {:?}", e))?;
+    //     let sequence = self
+    //         .get_account_sequence(&platform_keypair.public_key())
+    //         .await?;
+    //     let platform_account = Account::new(&platform_keypair.public_key(), &sequence)
+    //         .map_err(|e| anyhow!("Failed to create platform account object: {:?}", e))?;
 
-        let usdc_asset = self.get_usdc_asset()?;
+    //     let usdc_asset = self.get_usdc_asset()?;
 
-        let operation = Operation::new()
-            .payment(organizer_wallet, &usdc_asset, payout_stroops)
-            .map_err(|e| anyhow!("Failed to create payout operation: {:?}", e))?;
+    //     let operation = Operation::new()
+    //         .payment(organizer_wallet, &usdc_asset, payout_stroops)
+    //         .map_err(|e| anyhow!("Failed to create payout operation: {:?}", e))?;
 
-        let mut transaction = TransactionBuilder::new(
-            Rc::new(RefCell::new(platform_account)),
-            &self.network_passphrase,
-            None,
-        )
-        .add_operation(operation)
-        .fee(self.base_fee)
-        .add_memo(&format!("Organizer Payout: {} USDC", organizer_payout))
-        .build();
+    //     let mut transaction = TransactionBuilder::new(
+    //         Rc::new(RefCell::new(platform_account)),
+    //         &self.network_passphrase,
+    //         None,
+    //     )
+    //     .add_operation(operation)
+    //     .fee(self.base_fee)
+    //     .add_memo(&format!("Organizer Payout: {} USDC", organizer_payout))
+    //     .build();
 
-        transaction.sign(&[platform_keypair]);
-        let tx_hash = self.submit_transaction(&transaction).await?;
+    //     transaction.sign(&[platform_keypair]);
+    //     let tx_hash = self.submit_transaction(&transaction).await?;
 
-        info!(
-            "✅ Organizer payout successful: {} USDC sent (tx: {})",
-            organizer_payout, tx_hash
-        );
+    //     info!(
+    //         "✅ Organizer payout successful: {} USDC sent (tx: {})",
+    //         organizer_payout, tx_hash
+    //     );
 
-        Ok(tx_hash)
-    }
+    //     Ok(tx_hash)
+    // }
 
     // ===== UTILITY METHODS =====
 
@@ -1297,14 +1016,6 @@ impl StellarService {
         Ok(keypair.public_key())
     }
 
-    /// Check if user has USDC trustline
-    pub async fn has_usdc_trustline(&self, public_key: &str) -> Result<bool> {
-        match self.get_usdc_balance(public_key).await {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false), // No trustline or balance
-        }
-    }
-
     /// Validate that user has sufficient USDC balance for payment
     pub async fn validate_usdc_payment(
         &self,
@@ -1314,4 +1025,257 @@ impl StellarService {
         let balance = self.get_usdc_balance(public_key).await?;
         Ok(balance >= required_amount)
     }
+
+
+    // The receiver must have a trustline for this asset first.
+    // pub async fn issue_custom_asset(
+    //     &self,
+    //     issuer_secret: &str,
+    //     receiver_public: &str,
+    //     asset_code: &str,
+    //     amount: &str,
+    // ) -> Result<String> {
+    //     info!(
+    //         "🪙 Issuing {} units of {} from issuer to {}",
+    //         amount, asset_code, receiver_public
+    //     );
+
+    //     let asset_amount: f64 = amount.parse()?;
+    //     let stroops = (asset_amount * 10_000_000.0) as i64;
+
+    //     let issuer_keypair = Keypair::from_secret(issuer_secret)
+    //         .map_err(|e| anyhow!("Invalid issuer secret key: {:?}", e))?;
+
+    //     let sequence = self
+    //         .get_account_sequence(&issuer_keypair.public_key())
+    //         .await?;
+    //     let issuer_account = Account::new(&issuer_keypair.public_key(), &sequence)
+    //         .map_err(|e| anyhow!("Failed to create account object: {:?}", e))?;
+
+    //     // Create custom asset
+    //     let custom_asset = Asset::new(asset_code, Some(&issuer_keypair.public_key()))
+    //         .map_err(|e| anyhow!("Failed to create custom asset: {:?}", e))?;
+
+    //     // Create payment op to issues the asset
+    //     let operation = Operation::new()
+    //         .payment(receiver_public, &custom_asset, stroops)
+    //         .map_err(|e| anyhow!("Failed to create payment operation: {:?}", e))?;
+
+    //     let mut transaction = TransactionBuilder::new(
+    //         Rc::new(RefCell::new(issuer_account)),
+    //         &self.network_passphrase,
+    //         None,
+    //     )
+    //     .add_operation(operation)
+    //     .fee(self.base_fee)
+    //     .add_memo(&format!("Issue {} {}", amount, asset_code))
+    //     .build();
+
+    //     transaction.sign(&[issuer_keypair]);
+    //     let tx_hash = self.submit_transaction(&transaction).await?;
+
+    //     info!("✅ Asset issued successfully: {}", tx_hash);
+    //     Ok(tx_hash)
+    // }
+
+    // process for creating an NFT on Stellar.
+    // pub async fn create_nft(
+    //     &self,
+    //     issuer_secret: &str,
+    //     receiver_secret: &str,
+    //     nft_code: &str,
+    // ) -> Result<(String, String)> {
+    //     info!("🎨 Creating NFT {} - complete process", nft_code);
+
+    //     let issuer_keypair = Keypair::from_secret(issuer_secret)
+    //         .map_err(|e| anyhow!("Invalid issuer secret key: {:?}", e))?;
+    //     let receiver_keypair = Keypair::from_secret(receiver_secret)
+    //         .map_err(|e| anyhow!("Invalid receiver secret key: {:?}", e))?;
+
+    //     info!("📝 Step 1: Creating trustline...");
+    //     let trustline_tx = self
+    //         .create_asset_trustline(receiver_secret, nft_code, &issuer_keypair.public_key())
+    //         .await?;
+
+    //     info!("💰 Step 2: Issuing NFT...");
+    //     let issue_tx = self
+    //         .issue_custom_asset(
+    //             issuer_secret,
+    //             &receiver_keypair.public_key(),
+    //             nft_code,
+    //             "1.0",
+    //         )
+    //         .await?;
+
+    //     info!("✅ NFT {} created successfully!", nft_code);
+    //     info!("   Trustline TX: {}", trustline_tx);
+    //     info!("   Issue TX: {}", issue_tx);
+
+    //     Ok((trustline_tx, issue_tx))
+    // }
+
+    // // new owner must have a trustline for this asset.
+    // pub async fn transfer_nft_with_amount(
+    //     &self,
+    //     sender_secret: &str,
+    //     receiver_public: &str,
+    //     nft_code: &str,
+    //     issuer_public: &str,
+    //     amount: &str,
+    // ) -> Result<String> {
+    //     info!(
+    //         "🔄 Transferring {} units of NFT {} from current owner to {}",
+    //         amount, nft_code, receiver_public
+    //     );
+
+    //     let asset_amount: f64 = amount.parse()?;
+    //     let stroops = (asset_amount * 10_000_000.0) as i64;
+
+    //     let sender_keypair = Keypair::from_secret(sender_secret)
+    //         .map_err(|e| anyhow!("Invalid sender secret key: {:?}", e))?;
+
+    //     let sequence = self
+    //         .get_account_sequence(&sender_keypair.public_key())
+    //         .await?;
+    //     let sender_account = Account::new(&sender_keypair.public_key(), &sequence)
+    //         .map_err(|e| anyhow!("Failed to create account object: {:?}", e))?;
+
+    //     // Create custom asset ref
+    //     let nft_asset = Asset::new(nft_code, Some(issuer_public))
+    //         .map_err(|e| anyhow!("Failed to create NFT asset: {:?}", e))?;
+
+    //     // Create payment op for the NFT transfer
+    //     let operation = Operation::new()
+    //         .payment(receiver_public, &nft_asset, stroops)
+    //         .map_err(|e| anyhow!("Failed to create NFT transfer operation: {:?}", e))?;
+
+    //     let mut transaction = TransactionBuilder::new(
+    //         Rc::new(RefCell::new(sender_account)),
+    //         &self.network_passphrase,
+    //         None,
+    //     )
+    //     .add_operation(operation)
+    //     .fee(self.base_fee)
+    //     .add_memo(&format!("Transfer NFT {}", nft_code))
+    //     .build();
+
+    //     transaction.sign(&[sender_keypair]);
+    //     let tx_hash = self.submit_transaction(&transaction).await?;
+
+    //     info!("✅ NFT transferred successfully: {}", tx_hash);
+    //     Ok(tx_hash)
+    // }
+
+    // pub async fn transfer_nft(
+    //     &self,
+    //     sender_secret: &str,
+    //     receiver_public: &str,
+    //     nft_code: &str,
+    //     issuer_public: &str,
+    // ) -> Result<String> {
+    //     self.transfer_nft_with_amount(
+    //         sender_secret,
+    //         receiver_public,
+    //         nft_code,
+    //         issuer_public,
+    //         "1.0",
+    //     )
+    //     .await
+    // }
+
+    // /// Creates trustline for NFT and then transfers it (for new NFT owners).
+    // pub async fn transfer_nft_with_trustline(
+    //     &self,
+    //     sender_secret: &str,
+    //     receiver_secret: &str,
+    //     nft_code: &str,
+    //     issuer_public: &str,
+    //     amount: &str,
+    // ) -> Result<(String, String)> {
+    //     info!(
+    //         "🎯 Complete NFT transfer with trustline creation for {}",
+    //         nft_code
+    //     );
+
+    //     let receiver_keypair = Keypair::from_secret(receiver_secret)
+    //         .map_err(|e| anyhow!("Invalid receiver secret key: {:?}", e))?;
+
+    //     info!("📝 Step 1: Creating trustline for receiver...");
+    //     let trustline_tx = self
+    //         .create_asset_trustline(receiver_secret, nft_code, issuer_public)
+    //         .await?;
+
+    //     info!("🔄 Step 2: Transferring NFT...");
+    //     let transfer_tx = self
+    //         .transfer_nft_with_amount(
+    //             sender_secret,
+    //             &receiver_keypair.public_key(),
+    //             nft_code,
+    //             issuer_public,
+    //             amount,
+    //         )
+    //         .await?;
+
+    //     info!("✅ NFT transfer completed!");
+    //     info!("   Trustline TX: {}", trustline_tx);
+    //     info!("   Transfer TX: {}", transfer_tx);
+
+    //     Ok((trustline_tx, transfer_tx))
+    // }
+
+    
+
+    // pub async fn issue_nft_asset(
+    //     &self,
+    //     issuer_secret: &str,
+    //     asset_code: &str,
+    //     receiver_secret: &str,
+    // ) -> Result<(String, String)> {
+    //     info!("🎨 Issuing NFT asset {} (using create_nft)", asset_code);
+    //     self.create_nft(issuer_secret, receiver_secret, asset_code)
+    //         .await
+    // }
+
+    // pub async fn verify_nft_ownership(
+    //     &self,
+    //     account_public: &str,
+    //     nft_code: &str,
+    //     issuer_public: &str,
+    // ) -> Result<bool> {
+    //     info!(
+    //         "🔍 Verifying NFT ownership: {} owns {} from {}",
+    //         account_public, nft_code, issuer_public
+    //     );
+
+    //     let balances = self.get_account_balances(account_public).await?;
+
+    //     for balance in balances {
+    //         if balance.asset_type != "native" {
+    //             if let (Some(code), Some(issuer)) = (&balance.asset_code, &balance.asset_issuer) {
+    //                 if code == nft_code && issuer == issuer_public {
+    //                     let amount: f64 = balance.balance.parse().unwrap_or(0.0);
+    //                     info!(
+    //                         "✅ NFT ownership verified: {} owns {} units",
+    //                         account_public, amount
+    //                     );
+    //                     return Ok(amount > 0.0);
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     info!("❌ NFT ownership not found");
+    //     Ok(false)
+    // }
+
+    // pub async fn transfer_nft_simple(
+    //     &self,
+    //     sender_secret: &str,
+    //     receiver_public: &str,
+    //     nft_code: &str,
+    //     issuer_public: &str,
+    // ) -> Result<String> {
+    //     self.transfer_nft(sender_secret, receiver_public, nft_code, issuer_public)
+    //         .await
+    // }
 }

@@ -27,6 +27,8 @@ pub struct FeeBreakdown {
     pub breakdown_text: String,
 }
 
+
+#[derive(Debug, Clone)]
 pub struct FeeCalculator {
     pool: PgPool,
     stellar_service: crate::services::stellar::StellarService,

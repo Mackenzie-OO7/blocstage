@@ -114,11 +114,13 @@ pub async fn update_event(
     user: AuthenticatedUser,
 ) -> impl Responder {
     let _event = match crate::middleware::auth::check_event_permission(
-        &pool, 
-        user.id, 
+        &pool,
+        user.id,
         *event_id,
-        "edit_event"
-    ).await {
+        "edit_event",
+    )
+    .await
+    {
         Ok(event) => event,
         Err(response) => return response,
     };
@@ -337,7 +339,9 @@ pub async fn get_event_organizers(
         Ok(organizers) => {
             info!(
                 "User {} accessed organizers list for event {}. Found {} organizers",
-                user.id, event_id, organizers.len()
+                user.id,
+                event_id,
+                organizers.len()
             );
             HttpResponse::Ok().json(serde_json::json!({
                 "organizers": organizers,
@@ -374,20 +378,21 @@ pub async fn add_event_organizer(
         Ok(true) => {}
     }
 
-    let new_user_id = match EventOrganizer::find_user_by_identifier(&pool, &organizer_data.identifier).await {
-        Ok(Some(user_id)) => user_id,
-        Ok(None) => {
-            return HttpResponse::NotFound().json(ErrorResponse {
-                error: format!("User not found: {}", organizer_data.identifier),
-            });
-        }
-        Err(e) => {
-            error!("Failed to find user: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to search for user".to_string(),
-            });
-        }
-    };
+    let new_user_id =
+        match EventOrganizer::find_user_by_identifier(&pool, &organizer_data.identifier).await {
+            Ok(Some(user_id)) => user_id,
+            Ok(None) => {
+                return HttpResponse::NotFound().json(ErrorResponse {
+                    error: format!("User not found: {}", organizer_data.identifier),
+                });
+            }
+            Err(e) => {
+                error!("Failed to find user: {}", e);
+                return HttpResponse::InternalServerError().json(ErrorResponse {
+                    error: "Failed to search for user".to_string(),
+                });
+            }
+        };
 
     match EventOrganizer::add_organizer(&pool, *event_id, new_user_id, user.id).await {
         Ok(organizer) => {
@@ -403,7 +408,7 @@ pub async fn add_event_organizer(
         }
         Err(e) => {
             error!("Failed to add organizer: {}", e);
-            
+
             let error_message = if e.to_string().contains("already an organizer") {
                 "This user is already an organizer for this event"
             } else if e.to_string().contains("Maximum 4 organizers") {
@@ -454,7 +459,7 @@ pub async fn remove_event_organizer(
         }
         Err(e) => {
             error!("Failed to remove organizer: {}", e);
-            
+
             let error_message = if e.to_string().contains("Cannot remove the event owner") {
                 "Cannot remove the event owner"
             } else if e.to_string().contains("not an organizer") {
@@ -494,12 +499,14 @@ pub async fn update_organizer_permissions(
     }
 
     match EventOrganizer::update_permissions(
-        &pool, 
-        event_id, 
-        organizer_user_id, 
+        &pool,
+        event_id,
+        organizer_user_id,
         permissions_data.permissions.clone(),
-        user.id
-    ).await {
+        user.id,
+    )
+    .await
+    {
         Ok(updated_organizer) => {
             info!(
                 "Owner {} updated permissions for organizer {} on event {}",
@@ -513,7 +520,7 @@ pub async fn update_organizer_permissions(
         }
         Err(e) => {
             error!("Failed to update organizer permissions: {}", e);
-            
+
             let error_message = if e.to_string().contains("Cannot update owner permissions") {
                 "Cannot update owner permissions"
             } else if e.to_string().contains("not an organizer") {
@@ -996,7 +1003,8 @@ pub async fn pay_organizer(
         }
     };
 
-    let total_revenue_usdc = revenue_result.revenue
+    let total_revenue_usdc = revenue_result
+        .revenue
         .map(|amount| amount.to_string().parse::<f64>().unwrap_or(0.0))
         .unwrap_or(0.0);
 
@@ -1057,7 +1065,11 @@ pub async fn pay_organizer(
         }
     };
 
-    if !stellar.has_usdc_trustline(&organizer_wallet).await.unwrap_or(false) {
+    if !stellar
+        .has_usdc_trustline(&organizer_wallet)
+        .await
+        .unwrap_or(false)
+    {
         return HttpResponse::BadRequest().json(ErrorResponse {
             error: "Organizer needs to set up USDC trustline first".to_string(),
         });
@@ -1080,16 +1092,11 @@ pub async fn pay_organizer(
         .unwrap_or(5.0);
 
     // 6. Process payment using your existing method
-    let tx_hash = match stellar
-        .pay_event_organizer(
-            &platform_secret,
-            &organizer_wallet,
-            total_revenue_usdc,
-            platform_fee_percentage,
-        )
+    let payout_result = match stellar
+        .send_organizer_payment(&platform_secret, &organizer_wallet, total_revenue_usdc)
         .await
     {
-        Ok(hash) => hash,
+        Ok(result) => result, // result is OrganizerPaymentResult
         Err(e) => {
             error!("Failed to process organizer payout: {}", e);
             let error_message = if e.to_string().contains("insufficient") {
@@ -1103,6 +1110,9 @@ pub async fn pay_organizer(
         }
     };
 
+    // Extract the transaction hash for database storage
+    let tx_hash = &payout_result.transaction_hash;
+
     // 7. Record payout in database
     let organizer_payout = total_revenue_usdc * (1.0 - platform_fee_percentage / 100.0);
     let record_result = sqlx::query!(
@@ -1113,7 +1123,8 @@ pub async fn pay_organizer(
         *event_id,
         tx_hash,
         bigdecimal::BigDecimal::try_from(organizer_payout)
-            .map_err(|e| anyhow::anyhow!("Invalid payout amount: {}", e)).unwrap()
+            .map_err(|e| anyhow::anyhow!("Invalid payout amount: {}", e))
+            .unwrap()
     )
     .execute(&**pool)
     .await;
@@ -1140,7 +1151,9 @@ pub async fn pay_organizer(
         "total_revenue": format!("{:.2}", total_revenue_usdc),
         "organizer_payout": format!("{:.2}", organizer_payout),
         "platform_fee": format!("{:.2}", total_revenue_usdc * (platform_fee_percentage / 100.0)),
-        "currency": "USDC"
+        "currency": "USDC",
+        "gas_fee_xlm": payout_result.gas_fee_xlm,
+        "usdc_amount_sent": payout_result.usdc_amount_sent
     }))
 }
 
@@ -1156,17 +1169,32 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/{event_id}", web::put().to(update_event))
             .route("/{event_id}/cancel", web::post().to(cancel_event))
             .route("/{event_id}/analytics", web::get().to(get_event_analytics))
-            .route("/{event_id}/organizers", web::get().to(get_event_organizers))
-            .route("/{event_id}/organizers", web::post().to(add_event_organizer))
-            .route("/{event_id}/organizers/{user_id}", web::delete().to(remove_event_organizer))
-            .route("/{event_id}/organizers/{user_id}/permissions", web::put().to(update_organizer_permissions))
+            .route(
+                "/{event_id}/organizers",
+                web::get().to(get_event_organizers),
+            )
+            .route(
+                "/{event_id}/organizers",
+                web::post().to(add_event_organizer),
+            )
+            .route(
+                "/{event_id}/organizers/{user_id}",
+                web::delete().to(remove_event_organizer),
+            )
+            .route(
+                "/{event_id}/organizers/{user_id}/permissions",
+                web::put().to(update_organizer_permissions),
+            ),
     )
     .service(
         web::scope("/admin/events")
             .route("", web::get().to(admin_get_all_events))
             .route("/{event_id}", web::get().to(admin_get_event_details))
             .route("/{event_id}/cancel", web::post().to(admin_cancel_any_event))
-            .route("/{event_id}/financial-summary", web::get().to(get_event_financial_summary))
-            .route("/{event_id}/trigger-payout", web::post().to(pay_organizer))
+            .route(
+                "/{event_id}/financial-summary",
+                web::get().to(get_event_financial_summary),
+            )
+            .route("/{event_id}/trigger-payout", web::post().to(pay_organizer)),
     );
 }

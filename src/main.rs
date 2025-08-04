@@ -270,7 +270,7 @@ fn validate_environment_variables() {
     ];
     
     let important_vars = [
-        "USDC_ISSUER_PUBLIC_KEY",
+        "TESTNET_USDC_ISSUER",
         "PLATFORM_FEE_PERCENTAGE",
         "TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE",
         "GAS_FEE_MARGIN_PERCENTAGE",
@@ -391,7 +391,7 @@ fn validate_specific_configurations() {
     }
 
     // Validate Stellar public keys format
-    let public_key_vars = ["PLATFORM_PAYMENT_PUBLIC", "SPONSORSHIP_FEE_ACCOUNT_PUBLIC"];
+    let public_key_vars = ["PLATFORM_PAYMENT_PUBLIC_KEY", "SPONSORSHIP_FEE_ACCOUNT_PUBLIC"];
     for var in public_key_vars.iter() {
         if let Ok(key) = env::var(var) {
             if !key.starts_with('G') || key.len() != 56 {

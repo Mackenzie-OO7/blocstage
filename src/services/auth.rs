@@ -60,14 +60,64 @@ impl AuthService {
             .await?;
         info!("💳 Stellar keys updated for user: {}", user.id);
 
+        match self.auto_create_sponsored_usdc_trustline(&user).await {
+            Ok(tx_hash) => {
+                info!("✅ USDC trustline for user {}: has been created! {}", user.id, tx_hash);
+            }
+            Err(e) => {
+                warn!("⚠️ Failed to auto-create USDC trustline for user {}: {}", user.id, e);
+            }
+        }
+
         self.send_verification_email(&user).await?;
         info!("📧 Verification email sent to: {}", user.email);
 
         info!(
-            "🎉 Registration completed for user: {} ({})",
+            "🎉 Yay! Registration completed for user: {} ({})",
             user.id, user.email
         );
         Ok(user)
+    }
+
+     async fn auto_create_sponsored_usdc_trustline(&self, user: &User) -> Result<String> {
+        info!("🤝 sponsoring USDC trustline for user: {}", user.id);
+
+        let encrypted_secret = user
+            .stellar_secret_key_encrypted
+            .as_ref()
+            .ok_or_else(|| anyhow!("User has no encrypted secret key😞"))?;
+
+        let sponsor_manager = crate::services::sponsor_manager::SponsorManager::new(self.pool.clone())
+            .map_err(|e| anyhow!("😞 Failed to initialize sponsor manager: {}", e))?;
+        
+        let sponsor_info = sponsor_manager.get_available_sponsor().await
+            .map_err(|e| anyhow!("😞 Failed to get available sponsor: {}", e))?;
+
+        let usdc_issuer = std::env::var("TESTNET_USDC_ISSUER")
+            .unwrap_or_else(|_| "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5".to_string());
+
+        let tx_hash = self.stellar
+            .create_asset_trustline(
+                encrypted_secret,
+                "USDC",
+                &usdc_issuer,
+                Some(&sponsor_info.secret_key),
+            )
+            .await
+            .map_err(|e| anyhow!("Failed to create sponsored trustline: {}", e))?;
+
+        let gas_fee_xlm = self.stellar.sponsored_gas_fee();
+        sponsor_manager
+            .record_sponsorship_usage(&sponsor_info.public_key, gas_fee_xlm)
+            .await
+            .map_err(|e| anyhow!("Failed to record sponsor usage: {}", e))?;
+
+        info!(
+            "✅ Auto-created sponsored USDC trustline for user {}: {} (gas: {:.7} XLM)",
+            user.id, tx_hash, gas_fee_xlm
+        );
+
+        Ok(tx_hash)
     }
 
     pub async fn login(&self, login_req: LoginRequest) -> Result<String> {

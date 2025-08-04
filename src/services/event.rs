@@ -162,13 +162,12 @@ impl EventService {
             .parse::<f64>()?;
 
         // Send USDC payout to organizer
-        let tx_hash = self
+        let payout_result = self
             .stellar_service
-            .pay_event_organizer(
+            .send_organizer_payment(
                 &platform_secret_key,
                 &organizer_wallet,
                 total_revenue_usdc,
-                platform_fee_percentage,
             )
             .await?;
 
@@ -176,11 +175,11 @@ impl EventService {
         let platform_keeps = total_revenue_usdc * (platform_fee_percentage / 100.0);
 
         info!(
-            "✅ USDC payout successful: {} USDC revenue → {} USDC to organizer, {} USDC platform fee (tx: {})",
-            total_revenue_usdc, organizer_receives, platform_keeps, tx_hash
+            "✅ USDC payout successful: {} USDC revenue → {} USDC to organizer, {} USDC platform fee (tx: {:?})",
+            total_revenue_usdc, organizer_receives, platform_keeps, payout_result.transaction_hash
         );
 
-        Ok(tx_hash)
+        Ok(payout_result.transaction_hash)
     }
 
     async fn calculate_event_revenue_usdc(&self, event_id: Uuid) -> Result<f64> {
@@ -520,11 +519,11 @@ impl EventService {
     ) -> Result<String> {
         // platform fee
         let organizer_share = total_revenue * (1.0 - platform_fee_percentage / 100.0);
-        let amount_str = format!("{:.7}", organizer_share);
+        
 
         info!(
             "💰 Paying event organizer: {} USDC ({}% of {} total) using {:?}",
-            amount_str,
+            organizer_share,
             100.0 - platform_fee_percentage,
             total_revenue,
             payment_method
@@ -536,7 +535,7 @@ impl EventService {
                 info!("Paying organizer via Stellar");
                 let payment_result = self
                     .stellar_service
-                    .send_organizer_payment(platform_secret, organizer_public, &amount_str)
+                    .send_organizer_payment(platform_secret, organizer_public, organizer_share)
                     .await?;
                 Ok(payment_result.transaction_hash)
             }

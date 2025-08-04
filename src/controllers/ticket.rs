@@ -445,67 +445,67 @@ pub async fn generate_pdf_ticket(
     }
 }
 
-pub async fn convert_to_nft(
-    pool: web::Data<PgPool>,
-    ticket_id: web::Path<Uuid>,
-    user: AuthenticatedUser,
-) -> impl Responder {
-    match crate::models::ticket::Ticket::find_by_id(&pool, *ticket_id).await {
-        Ok(Some(ticket)) => {
-            if ticket.owner_id != user.id {
-                return HttpResponse::Forbidden().json(ErrorResponse {
-                    error: "You don't have permission to convert this ticket".to_string(),
-                });
-            }
+// pub async fn convert_to_nft(
+//     pool: web::Data<PgPool>,
+//     ticket_id: web::Path<Uuid>,
+//     user: AuthenticatedUser,
+// ) -> impl Responder {
+//     match crate::models::ticket::Ticket::find_by_id(&pool, *ticket_id).await {
+//         Ok(Some(ticket)) => {
+//             if ticket.owner_id != user.id {
+//                 return HttpResponse::Forbidden().json(ErrorResponse {
+//                     error: "You don't have permission to convert this ticket".to_string(),
+//                 });
+//             }
 
-            // NFT conversion
-            match create_ticket(&pool).await {
-                Ok(ticket) => match ticket.convert_to_nft(*ticket_id).await {
-                    Ok(ticket) => {
-                        info!(
-                            "Ticket converted to NFT: {} for user {}",
-                            ticket_id, user.id
-                        );
-                        HttpResponse::Ok().json(serde_json::json!({
-                            "ticket": ticket,
-                            "message": "Ticket has been successfully converted to an NFT"
-                        }))
-                    }
-                    Err(e) => {
-                        error!("Failed to convert ticket to NFT: {}", e);
+//             // NFT conversion
+//             match create_ticket(&pool).await {
+//                 Ok(ticket) => match ticket.convert_to_nft(*ticket_id).await {
+//                     Ok(ticket) => {
+//                         info!(
+//                             "Ticket converted to NFT: {} for user {}",
+//                             ticket_id, user.id
+//                         );
+//                         HttpResponse::Ok().json(serde_json::json!({
+//                             "ticket": ticket,
+//                             "message": "Ticket has been successfully converted to an NFT"
+//                         }))
+//                     }
+//                     Err(e) => {
+//                         error!("Failed to convert ticket to NFT: {}", e);
 
-                        let error_message = if e.to_string().contains("already an NFT") {
-                            "This ticket is already an NFT."
-                        } else if e.to_string().contains("Only valid tickets") {
-                            "Only valid tickets can be converted to NFTs."
-                        } else {
-                            "Failed to convert ticket to NFT. Please try again."
-                        };
+//                         let error_message = if e.to_string().contains("already an NFT") {
+//                             "This ticket is already an NFT."
+//                         } else if e.to_string().contains("Only valid tickets") {
+//                             "Only valid tickets can be converted to NFTs."
+//                         } else {
+//                             "Failed to convert ticket to NFT. Please try again."
+//                         };
 
-                        HttpResponse::BadRequest().json(ErrorResponse {
-                            error: error_message.to_string(),
-                        })
-                    }
-                },
-                Err(e) => {
-                    error!("Failed to initialize ticket service: {}", e);
-                    HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Internal server error".to_string(),
-                    })
-                }
-            }
-        }
-        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "Ticket not found".to_string(),
-        }),
-        Err(e) => {
-            error!("Failed to fetch ticket: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to verify ticket ownership. Please try again.".to_string(),
-            })
-        }
-    }
-}
+//                         HttpResponse::BadRequest().json(ErrorResponse {
+//                             error: error_message.to_string(),
+//                         })
+//                     }
+//                 },
+//                 Err(e) => {
+//                     error!("Failed to initialize ticket service: {}", e);
+//                     HttpResponse::InternalServerError().json(ErrorResponse {
+//                         error: "Internal server error".to_string(),
+//                     })
+//                 }
+//             }
+//         }
+//         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
+//             error: "Ticket not found".to_string(),
+//         }),
+//         Err(e) => {
+//             error!("Failed to fetch ticket: {}", e);
+//             HttpResponse::InternalServerError().json(ErrorResponse {
+//                 error: "Failed to verify ticket ownership. Please try again.".to_string(),
+//             })
+//         }
+//     }
+// }
 
 pub async fn transfer_ticket(
     pool: web::Data<PgPool>,
@@ -947,10 +947,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/{ticket_id}/generate-pdf",
                 web::post().to(generate_pdf_ticket),
             )
-            .route(
-                "/{ticket_id}/convert-to-nft",
-                web::post().to(convert_to_nft),
-            )
+            // .route(
+            //     "/{ticket_id}/convert-to-nft",
+            //     web::post().to(convert_to_nft),
+            // )
             .route("/{ticket_id}/transfer", web::post().to(transfer_ticket)), // .route("/{ticket_id}/cancel", web::post().to(cancel_ticket)),
     )
     .service(
