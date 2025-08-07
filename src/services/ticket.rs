@@ -430,7 +430,7 @@ impl TicketService {
         ticket_type_id: Uuid,
         user_id: Uuid,
     ) -> Result<(Ticket, Transaction)> {
-        info!("🎫 Starting USDC ticket purchase for user: {}", user_id);
+        info!("🎫 Starting ticket purchase with USDC for user: {}", user_id);
 
         let (ticket_type, event, user) = self
             .validate_ticket_purchase(ticket_type_id, user_id)
@@ -497,7 +497,7 @@ impl TicketService {
             )
             .await?;
 
-        self.fee_calculator.record_fee_calculation(transaction.id, &fee_calculation).await?;
+        self.fee_calculator.record_fee_calculation_in_tx(&mut tx, transaction.id, &fee_calculation).await?;
 
         let payment_result = self.payment_orchestrator
             .execute_sponsored_payment(&user, &transaction, &fee_calculation)
@@ -510,7 +510,7 @@ impl TicketService {
 
         let completed_transaction = transaction
             .update_sponsorship_details(
-                &self.pool,
+                &mut tx,
                 &payment_result.transaction_hash,
                 payment_result.gas_fee_xlm,
                 &payment_result.sponsor_account_used,
@@ -1429,7 +1429,7 @@ impl TicketService {
 //     ticket_type: &TicketType,
 //     transaction: &Transaction,
 // ) -> Result<String> {
-//     let platform_wallet = env::var("PLATFORM_WALLET_PUBLIC_KEY")
+//     let platform_wallet = env::var("PLATFORM_PAYMENT_PUBLIC_KEY")
 //         .map_err(|_| anyhow!("Platform wallet not configured"))?;
 
 //     // Get sponsor account for gas fees

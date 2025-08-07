@@ -4,7 +4,7 @@ use rand::{distr::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use bigdecimal::{BigDecimal, FromPrimitive};
 #[allow(unused_imports)]
-use sqlx::{postgres::PgArguments, Arguments, PgPool};
+use sqlx::{Postgres, Arguments, PgPool, Transaction as SqlxTransaction};
 use uuid::Uuid;
 use bigdecimal::Signed;
 
@@ -214,7 +214,7 @@ impl Transaction {
 
     pub async fn update_sponsorship_details(
         &self,
-        pool: &PgPool,
+        tx: &mut SqlxTransaction<'_, Postgres>,
         stellar_hash: &str,
         gas_fee_xlm: f64,
         sponsor_account: &str,
@@ -238,7 +238,7 @@ impl Transaction {
             Utc::now(),
             self.id
         )
-        .fetch_one(pool)
+        .fetch_one(&mut **tx)
         .await?;
 
         Ok(transaction)

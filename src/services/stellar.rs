@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use base64::Engine;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
@@ -92,7 +92,6 @@ pub struct OrganizerPaymentResult {
     pub gas_fee_xlm: f64,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct StellarService {
     horizon_url: String,
@@ -144,13 +143,18 @@ impl StellarService {
         encrypted_user_secret: &str,
         asset_code: &str,
         issuer_public_key: &str,
-        encrypted_sponsor_secret: Option<&str>,
+        sponsor_secret: Option<&str>,
     ) -> Result<String> {
-        let is_sponsored = encrypted_sponsor_secret.is_some();
+        let is_sponsored = sponsor_secret.is_some();
         info!(
             "🤝 Creating {} trustline for asset {} from issuer {}",
-            if is_sponsored { "sponsored" } else { "self-funded" },
-            asset_code, issuer_public_key
+            if is_sponsored {
+                "sponsored"
+            } else {
+                "self-funded"
+            },
+            asset_code,
+            issuer_public_key
         );
 
         // Validate inputs
@@ -165,96 +169,142 @@ impl StellarService {
             ));
         }
 
-        // ✅ Use your existing crypto service method
+        // Decrypt user secret key
         let crypto = crate::services::crypto::KeyEncryption::new()
             .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
         let user_secret_key = crypto
             .decrypt_secret_key(encrypted_user_secret)
-            .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
+            .map_err(|e| anyhow!("Failed to decrypt user secret key: {}", e))?;
 
         let user_keypair = Keypair::from_secret(&user_secret_key)
             .map_err(|e| anyhow!("Invalid account secret key: {:?}", e))?;
 
-        let sponsor_keypair = if let Some(encrypted_sponsor_secret) = encrypted_sponsor_secret {
-            let sponsor_secret_key = crypto
-                .decrypt_secret_key(encrypted_sponsor_secret)
-                .map_err(|e| anyhow!("Failed to decrypt sponsor secret key: {}", e))?;
-            Some(Keypair::from_secret(&sponsor_secret_key)
-                .map_err(|e| anyhow!("Invalid sponsor secret key: {:?}", e))?)
+        if let Some(sponsor_secret_input) = sponsor_secret {
+            // SPONSORED TRUSTLINE LOGIC
+            let sponsor_secret_key = match crypto.decrypt_secret_key(sponsor_secret_input) {
+                Ok(decrypted) => {
+                    debug!("✅ Successfully decrypted sponsor secret key");
+                    decrypted
+                }
+                Err(_) => {
+                    debug!("ℹ️ Sponsor secret appears to be plain text, using directly");
+                    sponsor_secret_input.to_string()
+                }
+            };
+
+            let sponsor_keypair = Keypair::from_secret(&sponsor_secret_key)
+                .map_err(|e| anyhow!("Invalid sponsor secret key: {:?}", e))?;
+
+            // Get sponsor account sequence (sponsor pays fees)
+            let sponsor_sequence = self
+                .get_account_sequence(&sponsor_keypair.public_key())
+                .await
+                .map_err(|e| anyhow!("Failed to get sponsor account sequence: {}", e))?;
+
+            let sponsor_account = Account::new(&sponsor_keypair.public_key(), &sponsor_sequence)
+                .map_err(|e| anyhow!("Failed to create sponsor account object: {:?}", e))?;
+
+            // Create asset
+            let asset = Asset::new(asset_code, Some(issuer_public_key))
+                .map_err(|e| anyhow!("Failed to create asset {}: {:?}", asset_code, e))?;
+
+            // Create operations for sponsored trustline
+            let begin_sponsoring = Operation::new()
+                .begin_sponsoring_future_reserves(&user_keypair.public_key())
+                .map_err(|e| anyhow!("Failed to create begin sponsoring operation: {:?}", e))?;
+
+            let change_trust = Operation::with_source(&user_keypair.public_key())
+                .map_err(|e| anyhow!("Failed to create operation with user source: {:?}", e))?
+                .change_trust(asset, None)
+                .map_err(|e| anyhow!("Failed to create change trust operation: {:?}", e))?;
+
+            let end_sponsoring = Operation::with_source(&user_keypair.public_key())
+                .map_err(|e| anyhow!("Failed to create operation with user source: {:?}", e))?
+                .end_sponsoring_future_reserves()
+                .map_err(|e| anyhow!("Failed to create end sponsoring operation: {:?}", e))?;
+
+            let memo = format!("Sponsored trustline for {} asset", asset_code);
+
+            // Build transaction with 3 operations
+            let mut transaction = TransactionBuilder::new(
+                Rc::new(RefCell::new(sponsor_account)),
+                &self.network_passphrase,
+                None,
+            )
+            .add_operation(begin_sponsoring)
+            .add_operation(change_trust)
+            .add_operation(end_sponsoring)
+            .fee(self.base_fee * 3) // 3 operations
+            .add_memo(&memo)
+            .build();
+
+            // Both sponsor and user must sign
+            transaction.sign(&[sponsor_keypair, user_keypair]);
+
+            let tx_hash = self
+                .submit_transaction(&transaction)
+                .await
+                .map_err(|e| anyhow!("Failed to submit sponsored trustline transaction: {}", e))?;
+
+            info!(
+                "✅ Sponsored trustline created successfully for {}: {}",
+                asset_code, tx_hash
+            );
+            Ok(tx_hash)
         } else {
-            None
-        };
+            // SELF-FUNDED TRUSTLINE LOGIC
+            let sequence = self
+                .get_account_sequence(&user_keypair.public_key())
+                .await
+                .map_err(|e| anyhow!("Failed to get account sequence: {}", e))?;
 
-        let sequence = self
-            .get_account_sequence(&user_keypair.public_key())
-            .await
-            .map_err(|e| anyhow!("Failed to get account sequence: {}", e))?;
+            let account = Account::new(&user_keypair.public_key(), &sequence)
+                .map_err(|e| anyhow!("Failed to create account object: {:?}", e))?;
 
-        let account = Account::new(&user_keypair.public_key(), &sequence)
-            .map_err(|e| anyhow!("Failed to create account object: {:?}", e))?;
+            // Create asset
+            let asset = Asset::new(asset_code, Some(issuer_public_key))
+                .map_err(|e| anyhow!("Failed to create asset {}: {:?}", asset_code, e))?;
 
-        // Create asset
-        let asset = Asset::new(asset_code, Some(issuer_public_key))
-            .map_err(|e| anyhow!("Failed to create asset {}: {:?}", asset_code, e))?;
+            // Create change trust operation
+            let operation = Operation::new()
+                .change_trust(asset, None)
+                .map_err(|e| anyhow!("Failed to create change trust operation: {:?}", e))?;
 
-        // Create change trust operation
-        let operation = Operation::new()
-            .change_trust(asset, None)
-            .map_err(|e| anyhow!("Failed to create change trust operation: {:?}", e))?;
+            let memo = format!("Trustline for {} asset", asset_code);
 
-        let fee = if is_sponsored {
-            self.base_fee * 2
-        } else {
-            self.base_fee
-        };
+            // Build transaction
+            let mut transaction = TransactionBuilder::new(
+                Rc::new(RefCell::new(account)),
+                &self.network_passphrase,
+                None,
+            )
+            .add_operation(operation)
+            .fee(self.base_fee)
+            .add_memo(&memo)
+            .build();
 
-        let memo = if is_sponsored {
-            format!("Sponsored trustline for {} asset", asset_code)
-        } else {
-            format!("Trustline for {} asset", asset_code)
-        };
-
-        // Build transaction
-        let mut transaction = TransactionBuilder::new(
-            Rc::new(RefCell::new(account)),
-            &self.network_passphrase,
-            None,
-        )
-        .add_operation(operation)
-        .fee(fee)
-        .add_memo(&memo)
-        .build();
-
-        if let Some(sponsor_keypair) = sponsor_keypair {
-            transaction.sign(&[user_keypair, sponsor_keypair]);
-        } else {
+            // Sign transaction
             transaction.sign(&[user_keypair]);
+
+            let tx_hash = self
+                .submit_transaction(&transaction)
+                .await
+                .map_err(|e| anyhow!("Failed to submit trustline transaction: {}", e))?;
+
+            info!(
+                "✅ Self-funded trustline created successfully for {}: {}",
+                asset_code, tx_hash
+            );
+            Ok(tx_hash)
         }
-
-        let tx_hash = self
-            .submit_transaction(&transaction)
-            .await
-            .map_err(|e| anyhow!("Failed to submit trustline transaction: {}", e))?;
-
-        info!(
-            "✅ {} trustline created successfully for {}: {}",
-            if is_sponsored { "Sponsored" } else { "Self-funded" },
-            asset_code, tx_hash
-        );
-        Ok(tx_hash)
     }
 
     /// Create USDC trustline (without sponsorship)
     pub async fn create_usdc_trustline(&self, encrypted_account_secret: &str) -> Result<String> {
         info!("🪙 Creating self-funded USDC trustline");
-        
-        self.create_asset_trustline(
-            encrypted_account_secret,
-            "USDC", 
-            &self.usdc_issuer,
-            None,
-        )
-        .await
+
+        self.create_asset_trustline(encrypted_account_secret, "USDC", &self.usdc_issuer, None)
+            .await
     }
 
     pub async fn has_usdc_trustline(&self, public_key: &str) -> Result<bool> {
@@ -353,17 +403,24 @@ impl StellarService {
         let response = self.client.get(&url).send().await?;
         let status = response.status();
 
-        if !status.is_success() {
+        if status.is_success() {
+            let account_data: HorizonAccountResponse = response.json().await?;
+            Ok(account_data.balances)
+        } else if status == reqwest::StatusCode::NOT_FOUND {
+            // Account doesn't exist yet (new user) - return empty balances
+            info!(
+                "Account {} not found (new user), treating as empty balance",
+                public_key
+            );
+            Ok(vec![])
+        } else {
             let error_text = response.text().await?;
-            return Err(anyhow!(
+            Err(anyhow!(
                 "Failed to get account: HTTP {}: {}",
                 status,
                 error_text
-            ));
+            ))
         }
-
-        let account_data: HorizonAccountResponse = response.json().await?;
-        Ok(account_data.balances)
     }
 
     pub async fn get_xlm_balance(&self, public_key: &str) -> Result<f64> {
@@ -375,7 +432,8 @@ impl StellarService {
             }
         }
 
-        Err(anyhow!("No native XLM balance found"))
+        // For pre-funding: no XLM balance = 0.0 (not an error)
+        Ok(0.0)
     }
 
     pub async fn send_payment(
@@ -403,7 +461,7 @@ impl StellarService {
             .map_err(|e| anyhow!("Invalid user secret key: {:?}", e))?;
         let sponsor_keypair = Keypair::from_secret(sponsor_secret)
             .map_err(|e| anyhow!("Invalid sponsor secret key: {:?}", e))?;
-        let sponsor_public_key = sponsor_keypair.public_key();
+        // let sponsor_public_key = sponsor_keypair.public_key();
 
         if !self.is_valid_public_key(recipient_public) {
             return Err(anyhow!(
@@ -412,53 +470,143 @@ impl StellarService {
             ));
         }
 
-        // Get sequence for user account
+        // Step 1: Sponsor pre-funds user with XLM for transaction fees
+        self.sponsor_prefund_user(&sponsor_keypair, &user_keypair.public_key()).await?;
+
+        let tx_hash = self
+            .execute_user_usdc_payment(&user_keypair, recipient_public, stroops, usdc_amount)
+            .await?;
+
+        // Calculate gas fee (sponsor effectively paid via pre-funding)
+        let gas_fee_xlm = self.base_fee as f64 / 10_000_000.0;
+
+        let result = SponsoredPaymentResult {
+            transaction_hash: tx_hash,
+            gas_fee_xlm,
+            sponsor_account_used: sponsor_keypair.public_key(),
+            usdc_amount_sent: amount_f64,
+        };
+
+        info!(
+            "✅ Sponsored USDC payment successful: {}",
+            result.transaction_hash
+        );
+        Ok(result)
+    }
+
+    /// Sponsor pre-funds user with minimal XLM for transaction fees (if needed)
+    async fn sponsor_prefund_user(
+        &self,
+        sponsor_keypair: &Keypair,
+        user_public_key: &str,
+    ) -> Result<()> {
+        info!("🔧 Checking if user needs XLM pre-funding");
+
+        // Check user's XLM balance
+        let xlm_balance = self.get_xlm_balance(user_public_key).await?;
+        let min_balance_needed = 1.01; // 0.01 XLM = ~1000 transactions worth of fees
+
+        if xlm_balance < min_balance_needed {
+            info!("💰 Pre-funding user with XLM for transaction fees");
+
+            // Send small amount of XLM from sponsor to user
+            let funding_amount = 0.05; // Send 0.02 XLM (enough for many transactions)
+
+            self.send_xlm_from_sponsor(sponsor_keypair, user_public_key, funding_amount)
+                .await?;
+
+            info!(
+                "✅ User pre-funded with {} XLM for transaction fees",
+                funding_amount
+            );
+        } else {
+            info!("✅ User has sufficient XLM balance: {} XLM", xlm_balance);
+        }
+
+        Ok(())
+    }
+
+    /// Send XLM from sponsor to user for fee funding
+    async fn send_xlm_from_sponsor(
+        &self,
+        sponsor_keypair: &Keypair,
+        user_public_key: &str,
+        xlm_amount: f64,
+    ) -> Result<String> {
+        let stroops = (xlm_amount * 10_000_000.0) as i64;
+
+        // Get sponsor's account sequence
+        let sponsor_sequence = self
+            .get_account_sequence(&sponsor_keypair.public_key())
+            .await?;
+        let sponsor_account = Account::new(&sponsor_keypair.public_key(), &sponsor_sequence)
+            .map_err(|e| anyhow!("Failed to create sponsor account: {:?}", e))?;
+
+        // Create XLM payment operation
+        let payment_operation = Operation::new()
+            .payment(user_public_key, &Asset::native(), stroops)
+            .map_err(|e| anyhow!("Failed to create XLM payment operation: {:?}", e))?;
+
+        // Build transaction
+        let mut funding_transaction = TransactionBuilder::new(
+            Rc::new(RefCell::new(sponsor_account)),
+            &self.network_passphrase,
+            None,
+        )
+        .add_operation(payment_operation)
+        .fee(self.base_fee)
+        .add_memo(&format!("Fee funding: {} XLM", xlm_amount))
+        .build();
+
+        // Sponsor signs and submits
+        funding_transaction.sign(&[sponsor_keypair.clone()]);
+        let tx_hash = self.submit_transaction(&funding_transaction).await?;
+
+        info!("✅ XLM funding transaction submitted: {}", tx_hash);
+        Ok(tx_hash)
+    }
+
+    /// Execute user's USDC payment (user pays own XLM fees from pre-funded balance)
+    async fn execute_user_usdc_payment(
+        &self,
+        user_keypair: &Keypair,
+        recipient_public: &str,
+        stroops: i64,
+        usdc_amount: &str,
+    ) -> Result<String> {
+        info!("🔧 Executing user's USDC payment");
+
+        // Get user's account sequence
         let user_sequence = self
             .get_account_sequence(&user_keypair.public_key())
-            .await
-            .map_err(|e| anyhow!("Failed to get user account sequence: {}", e))?;
+            .await?;
         let user_account = Account::new(&user_keypair.public_key(), &user_sequence)
-            .map_err(|e| anyhow!("Failed to create user account object: {:?}", e))?;
+            .map_err(|e| anyhow!("Failed to create user account: {:?}", e))?;
 
         let usdc_asset = self.get_usdc_asset()?;
 
         // Create USDC payment operation
         let payment_operation = Operation::new()
             .payment(recipient_public, &usdc_asset, stroops)
-            .map_err(|e| anyhow!("Failed to create payment operation: {:?}", e))?;
+            .map_err(|e| anyhow!("Failed to create USDC payment operation: {:?}", e))?;
 
-        // Build transaction with fee sponsorship
-        let mut transaction = TransactionBuilder::new(
+        // Build transaction
+        let mut usdc_transaction = TransactionBuilder::new(
             Rc::new(RefCell::new(user_account)),
             &self.network_passphrase,
             None,
         )
         .add_operation(payment_operation)
-        .fee(self.base_fee * 2) // Higher fee for sponsored transactions
+        .fee(self.base_fee) // User pays XLM fees from pre-funded balance
         .add_memo(&format!("USDC Payment: {}", usdc_amount))
         .build();
 
-        // Sign with both user and sponsor
-        transaction.sign(&[user_keypair, sponsor_keypair]);
+        // User signs and submits their own transaction
+        usdc_transaction.sign(&[user_keypair.clone()]);
+        let tx_hash = self.submit_transaction(&usdc_transaction).await?;
 
-        // Submit transaction
-        let tx_hash = self
-            .submit_transaction(&transaction)
-            .await
-            .map_err(|e| anyhow!("Failed to submit sponsored payment: {}", e))?;
-
-        // Calculate gas fee paid by sponsor
-        let gas_fee_xlm = (self.base_fee * 2) as f64 / 10_000_000.0;
-
-        let result = SponsoredPaymentResult {
-            transaction_hash: tx_hash.clone(),
-            gas_fee_xlm,
-            sponsor_account_used: sponsor_public_key,
-            usdc_amount_sent: amount_f64,
-        };
-
-        info!("✅ Sponsored USDC payment successful: {}", tx_hash);
-        Ok(result)
+        info!("✅ User's USDC payment transaction submitted: {}", tx_hash);
+        Ok(tx_hash)
     }
 
     /// Send USDC payment with encrypted user key (backward compatibility)
@@ -467,7 +615,7 @@ impl StellarService {
         user_secret_key_encrypted: &str,
         receiver_public_key: &str,
         usdc_amount: &str,
-        sponsor_secret: &str,
+        encrypted_sponsor_secret: &str,
     ) -> Result<SponsoredPaymentResult> {
         let crypto = crate::services::crypto::KeyEncryption::new()
             .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
@@ -479,7 +627,7 @@ impl StellarService {
             &decrypted_secret,
             receiver_public_key,
             usdc_amount,
-            sponsor_secret,
+            encrypted_sponsor_secret,
         )
         .await
     }
@@ -1026,7 +1174,6 @@ impl StellarService {
         Ok(balance >= required_amount)
     }
 
-
     // The receiver must have a trustline for this asset first.
     // pub async fn issue_custom_asset(
     //     &self,
@@ -1222,8 +1369,6 @@ impl StellarService {
 
     //     Ok((trustline_tx, transfer_tx))
     // }
-
-    
 
     // pub async fn issue_nft_asset(
     //     &self,

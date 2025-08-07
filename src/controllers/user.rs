@@ -388,7 +388,7 @@ pub async fn create_usdc_trustline(
             };
 
             let usdc_issuer = std::env::var("TESTNET_USDC_ISSUER")
-                .unwrap_or_else(|_| "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5".to_string());
+                .unwrap_or_else(|_| "GD34GBHUVW66SULHJMFXEA24G6WBTNV5RNQTZ6CQ7NXFL2XMN53BMMOJ".to_string());
 
             let sponsor_manager = match crate::services::sponsor_manager::SponsorManager::new(pool.get_ref().clone()) {
                 Ok(manager) => manager,

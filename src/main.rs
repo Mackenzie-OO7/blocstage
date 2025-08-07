@@ -259,17 +259,14 @@ async fn initialize_sponsor_system(pool: &sqlx::PgPool) -> Result<usize, Box<dyn
 }
 
 fn validate_environment_variables() {
-    let required_vars = [
+    let important_vars = [
         "DATABASE_URL",
         "JWT_SECRET",
         "STELLAR_NETWORK",
         "MASTER_ENCRYPTION_KEY",
-        "PLATFORM_WALLET_PUBLIC_KEY",
+        "PLATFORM_PAYMENT_PUBLIC_KEY",
         "SPONSORSHIP_FEE_ACCOUNT_PUBLIC",
         "SPONSOR_ACCOUNT_1_SECRET",
-    ];
-    
-    let important_vars = [
         "TESTNET_USDC_ISSUER",
         "PLATFORM_FEE_PERCENTAGE",
         "TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE",

@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use bigdecimal::{BigDecimal, FromPrimitive};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction as SqlxTransaction};
 use std::env;
 use uuid::Uuid;
 
@@ -156,6 +156,42 @@ impl FeeCalculator {
 
         Ok(())
     }
+
+    // in db within a tx context
+    pub async fn record_fee_calculation_in_tx<'a>(
+    &self,
+    tx: &mut SqlxTransaction<'a, Postgres>,
+    transaction_id: Uuid,
+    calculation: &FeeCalculation,
+) -> Result<()> {
+    sqlx::query!(
+        r#"
+        INSERT INTO platform_fee_calculations (
+            transaction_id, ticket_price, base_sponsorship_fee, gas_cost_usdc,
+            xlm_to_usdc_rate, margin_percentage, final_sponsorship_fee, calculation_method
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "#,
+        transaction_id,
+        BigDecimal::from_f64(calculation.ticket_price)
+            .ok_or_else(|| anyhow!("Invalid ticket price"))?,
+        BigDecimal::from_f64(calculation.base_sponsorship_fee)
+            .ok_or_else(|| anyhow!("Invalid base sponsorship fee"))?,
+        BigDecimal::from_f64(calculation.gas_cost_usdc)
+            .ok_or_else(|| anyhow!("Invalid gas cost"))?,
+        BigDecimal::from_f64(calculation.xlm_to_usdc_rate)
+            .ok_or_else(|| anyhow!("Invalid exchange rate"))?,
+        BigDecimal::from_f64(calculation.margin_percentage)
+            .ok_or_else(|| anyhow!("Invalid margin percentage"))?,
+        BigDecimal::from_f64(calculation.final_sponsorship_fee)
+            .ok_or_else(|| anyhow!("Invalid final sponsorship fee"))?,
+        calculation.calculation_method
+    )
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
+}
 
     /// Estimate current Stellar network gas cost for a sponsored payment transaction
     async fn estimate_transaction_gas_cost(&self) -> Result<f64> {

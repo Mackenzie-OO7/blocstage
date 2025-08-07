@@ -6,6 +6,7 @@ use anyhow::{anyhow, Result};
 use bcrypt::{hash, verify};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use log::{debug, error, info, warn};
