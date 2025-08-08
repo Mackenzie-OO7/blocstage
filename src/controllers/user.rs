@@ -1,12 +1,13 @@
-use crate::{middleware::auth::AuthenticatedUser, services::SponsorManager};
 use crate::models::user::User;
+use crate::services::auth::CachedUserProfile;
 use crate::services::stellar::StellarService;
-use crate::services::ticket::TicketService;
+use crate::services::RedisService;
+use crate::{middleware::auth::AuthenticatedUser};
 use actix_web::{web, HttpResponse, Responder};
 use anyhow::Result;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
-use serde_json;
+use serde_json::{self, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -16,13 +17,13 @@ struct ErrorResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct UpdateProfileRequest {
+pub struct UpdateProfileRequest {
     username: Option<String>,
     // TODO: email updates would require verification
 }
 
 #[derive(Debug, Deserialize)]
-struct UpdatePasswordRequest {
+pub struct UpdatePasswordRequest {
     current_password: String,
     new_password: String,
 }
@@ -49,11 +50,15 @@ pub struct GenerateWalletRequest {
     // TODO: add options
 }
 
-pub async fn get_profile(pool: web::Data<PgPool>, user: AuthenticatedUser) -> impl Responder {
+pub async fn get_profile(
+    pool: web::Data<PgPool>, 
+    user: AuthenticatedUser
+) -> impl Responder {
     match User::find_by_id(&pool, user.id).await {
-        Ok(Some(user_profile)) => HttpResponse::Ok().json(user_profile),
+        Ok(Some(user_profile)) => {
+            HttpResponse::Ok().json(user_profile)
+        }
         Ok(None) => {
-            // But this shouldn't happen if middleware is working well
             error!("User found in token but not in database: {}", user.id);
             HttpResponse::NotFound().json(ErrorResponse {
                 error: "User profile not found".to_string(),
@@ -367,7 +372,8 @@ pub async fn create_usdc_trustline(
         Ok(Some(user_profile)) => {
             if user_profile.stellar_public_key.is_none() {
                 return HttpResponse::BadRequest().json(ErrorResponse {
-                    error: "User must have a Stellar wallet before creating USDC trustline".to_string(),
+                    error: "User must have a Stellar wallet before creating USDC trustline"
+                        .to_string(),
                 });
             }
 
@@ -387,18 +393,21 @@ pub async fn create_usdc_trustline(
                 }
             };
 
-            let usdc_issuer = std::env::var("TESTNET_USDC_ISSUER")
-                .unwrap_or_else(|_| "GD34GBHUVW66SULHJMFXEA24G6WBTNV5RNQTZ6CQ7NXFL2XMN53BMMOJ".to_string());
+            let usdc_issuer = std::env::var("TESTNET_USDC_ISSUER").unwrap_or_else(|_| {
+                "GD34GBHUVW66SULHJMFXEA24G6WBTNV5RNQTZ6CQ7NXFL2XMN53BMMOJ".to_string()
+            });
 
-            let sponsor_manager = match crate::services::sponsor_manager::SponsorManager::new(pool.get_ref().clone()) {
-                Ok(manager) => manager,
-                Err(e) => {
-                    error!("Failed to initialize sponsor manager: {}", e);
-                    return HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Sponsorship service unavailable".to_string(),
-                    });
-                }
-            };
+            let sponsor_manager =
+                match crate::services::sponsor_manager::SponsorManager::new(pool.get_ref().clone())
+                {
+                    Ok(manager) => manager,
+                    Err(e) => {
+                        error!("Failed to initialize sponsor manager: {}", e);
+                        return HttpResponse::InternalServerError().json(ErrorResponse {
+                            error: "Sponsorship service unavailable".to_string(),
+                        });
+                    }
+                };
 
             let sponsor_info = match sponsor_manager.get_available_sponsor().await {
                 Ok(sponsor) => sponsor,
@@ -410,22 +419,24 @@ pub async fn create_usdc_trustline(
                 }
             };
 
-
             // Direct call - no wrapper needed!
-            match stellar.create_asset_trustline(
-                &user_profile.stellar_secret_key_encrypted.unwrap(),
-                "USDC",
-                &usdc_issuer,
-                Some(&sponsor_info.secret_key),
-            ).await {
+            match stellar
+                .create_asset_trustline(
+                    &user_profile.stellar_secret_key_encrypted.unwrap(),
+                    "USDC",
+                    &usdc_issuer,
+                    Some(&sponsor_info.secret_key),
+                )
+                .await
+            {
                 Ok(tx_hash) => {
                     info!("USDC trustline created for user {}: {}", user.id, tx_hash);
                     let gas_fee_xlm = stellar.sponsored_gas_fee();
-                    
-                    if let Err(e) = sponsor_manager.record_sponsorship_usage(
-                        &sponsor_info.public_key,
-                        gas_fee_xlm,
-                    ).await {
+
+                    if let Err(e) = sponsor_manager
+                        .record_sponsorship_usage(&sponsor_info.public_key, gas_fee_xlm)
+                        .await
+                    {
                         warn!("Failed to record sponsor usage: {}", e);
                     }
                     HttpResponse::Ok().json(serde_json::json!({
@@ -460,7 +471,6 @@ pub async fn create_usdc_trustline(
         }
     }
 }
-
 
 pub async fn get_funding_instructions(
     pool: web::Data<sqlx::PgPool>,
@@ -644,6 +654,35 @@ pub async fn get_user_by_id(
             })
         }
     }
+}
+
+pub async fn send_notification(
+    redis: web::Data<Option<RedisService>>,
+    user: AuthenticatedUser,
+    data: web::Json<serde_json::Value>,
+) -> impl Responder {
+    // Check rate limit
+    if let Some(redis) = redis.as_ref() {
+        let rate_limit_key = format!("RATE_LIMIT:NOTIFICATIONS:{}", user.id);
+        match redis.check_rate_limit(&rate_limit_key, 10, 3600).await { // 10 per hour
+            Ok(allowed) => {
+                if !allowed {
+                    return HttpResponse::TooManyRequests().json(json!({
+                        "error": "Too many notifications sent. Please try again later."
+                    }));
+                }
+            }
+            Err(e) => {
+                warn!("Rate limit check failed: {}", e);
+                // Continue without rate limiting if Redis is down
+            }
+        }
+    }
+
+    //TODO:put notification logic here...
+    HttpResponse::Ok().json(json!({
+        "message": "Notification sent successfully"
+    }))
 }
 
 pub fn configure(cfg: &mut web::ServiceConfig) {

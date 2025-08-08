@@ -11,42 +11,63 @@ use actix_cors::Cors;
 use actix_governor::{Governor, GovernorConfigBuilder};
 use sqlx::{pool, postgres::PgPoolOptions};
 use dotenv::dotenv;
-use std::{env, time::Duration};
+use std::{env, time::Duration,};
 use log::{info, error, warn};
 use serde_json::json;
 
 use crate::services::scheduler::SchedulerService;
 use crate::services::sponsor_manager::SponsorManager;
+use crate::services::RedisService;
 
 use blocstage::controllers::configure_routes;
 use blocstage::api_info;
 
-async fn health_check() -> impl Responder {
-    HttpResponse::Ok().json(json!({
+async fn health_check(redis: web::Data<Option<RedisService>>) -> impl Responder {
+    let mut health_status = json!({
         "status": "healthy",
         "service": "blocstage-api",
-        "timestamp": chrono::Utc::now().to_rfc3339()
-    }))
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "components": {
+            "database": "healthy"
+        }
+    });
+
+    if let Some(redis) = redis.as_ref() {
+        match redis.health_check().await {
+            Ok(redis_health) => {
+                health_status["components"]["redis"] = json!({
+                    "status": redis_health.status,
+                    "latency_ms": redis_health.latency_ms
+                });
+            }
+            Err(_) => {
+                health_status["components"]["redis"] = json!({
+                    "status": "unhealthy"
+                });
+                health_status["status"] = json!("degraded");
+            }
+        }
+    } else {
+        health_status["components"]["redis"] = json!({
+            "status": "disabled",
+            "message": "Redis not configured"
+        });
+    }
+
+    if let Ok(email_service) = crate::services::email::EmailService::new().await {
+        let email_health = match email_service.health_check().await {
+            Ok(true) => "healthy",
+            Ok(false) => "unhealthy",
+            Err(_) => "error",
+        };
+        health_status["checks"]["email"] = serde_json::json!({
+            "status": email_health,
+            "provider": email_service.provider_name()
+        });
+    }
+
+    HttpResponse::Ok().json(health_status)
 }
-// Moved this to lib.rs
-// // API info endpoint. TODO: this will be moved to the /api scope
-// pub async fn api_info() -> impl Responder {
-//     HttpResponse::Ok().json(json!({
-//         "name": "BlocStage Ticketing API",
-//         "version": env!("CARGO_PKG_VERSION"),
-//         "description": "Decentralized ticketing platform on Stellar",
-//         "endpoints": {
-//             "health": "/health",
-//             "api_docs": "/api",
-//             "auth": "/api/auth/*",
-//             "events": "/api/events/*",
-//             "tickets": "/api/tickets/*",
-//             "users": "/api/users/*",
-//             "transactions": "/api/transactions/*",
-//             "admin": "/api/admin/*"
-//         }
-//     }))
-// }
 
 // 404 handler for undefined routes
 async fn not_found() -> impl Responder {
@@ -88,6 +109,27 @@ async fn main() -> std::io::Result<()> {
         .connect(&database_url)
         .await
         .expect("Failed to create database pool");
+
+
+    let redis_service: Option<RedisService> = match RedisService::new().await {
+        Ok(redis) => {
+            info!("✅ Redis connection established");
+            
+            // Test Redis connection
+            match redis.ping().await {
+                Ok(pong) => info!("🏓 Redis ping successful: {}", pong),
+                Err(e) => warn!("⚠️ Redis ping failed: {}", e),
+            }
+            
+            Some(redis)
+        }
+        Err(e) => {
+            warn!("⚠️ Redis connection failed: {}", e);
+            warn!("🚀 Application will continue without Redis caching");
+            None
+        }
+    };
+
     
     match sqlx::query("SELECT 1").fetch_one(&db_pool).await {
         Ok(_) => info!("Database connection successful"),
@@ -158,6 +200,8 @@ async fn main() -> std::io::Result<()> {
         
         App::new()
             .app_data(web::Data::new(db_pool.clone()))
+            .app_data(web::Data::new(redis_service.clone())) // ← ADD Redis to app data
+
             
             // JSON payload limits (10MB max)
             .app_data(web::JsonConfig::default()

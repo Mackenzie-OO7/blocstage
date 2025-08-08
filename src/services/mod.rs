@@ -7,7 +7,8 @@ pub mod scheduler;
 pub mod sponsor_manager;
 pub mod fee_calculator;
 pub mod payment_orchestrator;
-
+pub mod redis_service;
+pub mod email;
 
 pub use stellar::StellarService;
 pub use auth::AuthService;
@@ -18,3 +19,4 @@ pub use scheduler::SchedulerService;
 pub use sponsor_manager::SponsorManager;
 pub use fee_calculator::FeeCalculator;
 pub use payment_orchestrator::PaymentOrchestrator;
+pub use redis_service::RedisService;

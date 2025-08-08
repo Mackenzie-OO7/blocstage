@@ -7,9 +7,11 @@ use actix_web::{
     HttpResponse, Result as ActixResult,
 };
 use futures::future::{ready, Ready};
-use log::{error, warn, info, debug};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::future::Future;
+use std::pin::Pin;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -19,78 +21,84 @@ pub struct AuthenticatedUser {
 
 impl FromRequest for AuthenticatedUser {
     type Error = Error;
-    type Future = Ready<Result<Self, Self::Error>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + 'static>>; // ← CHANGE this
 
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
-        info!("Auth middleware called for: {}", req.path());
-        
-        let auth_header = match req.headers().get(http::header::AUTHORIZATION) {
-            Some(header) => {
-                info!("✅ Authorization header found");
-                header
-            },
-            None => {
-                warn!(" Request without authorization header");
-                return ready(Err(ErrorUnauthorized("Authorization header required")));
+        let req = req.clone(); // Clone for the async block
+
+        Box::pin(async move {
+            // ← CHANGE: Make this async
+            info!("Auth middleware called for: {}", req.path());
+
+            let auth_header = match req.headers().get(http::header::AUTHORIZATION) {
+                Some(header) => {
+                    info!("✅ Authorization header found");
+                    header
+                }
+                None => {
+                    warn!("❌ Request without authorization header");
+                    return Err(ErrorUnauthorized("Authorization header required"));
+                }
+            };
+
+            let auth_str = match auth_header.to_str() {
+                Ok(str) => {
+                    info!("✅ Authorization header parsed successfully");
+                    str
+                }
+                Err(_) => {
+                    warn!("Invalid authorization header format");
+                    return Err(ErrorUnauthorized("Invalid authorization header format"));
+                }
+            };
+
+            if !auth_str.starts_with("Bearer ") {
+                warn!("Authorization header without Bearer scheme");
+                return Err(ErrorUnauthorized("Bearer token required"));
             }
-        };
 
-        let auth_str = match auth_header.to_str() {
-            Ok(str) => {
-                info!("✅ Authorization header parsed successfully");
-                str
-            },
-            Err(_) => {
-                warn!("Invalid authorization header format");
-                return ready(Err(ErrorUnauthorized("Invalid authorization header format")));
+            let token = &auth_str[7..];
+            info!("🎫 Token extracted, length: {}", token.len());
+
+            if token.trim().is_empty() {
+                warn!("Empty token provided");
+                return Err(ErrorUnauthorized("Token cannot be empty"));
             }
-        };
 
-        if !auth_str.starts_with("Bearer ") {
-            warn!("Authorization header without Bearer scheme");
-            return ready(Err(ErrorUnauthorized("Bearer token required")));
-        }
+            let pool = match req.app_data::<web::Data<sqlx::PgPool>>() {
+                Some(pool) => {
+                    info!("🗄️ Database pool found");
+                    pool
+                }
+                None => {
+                    error!("Database pool not found in app data");
+                    return Err(ErrorUnauthorized("Internal server error"));
+                }
+            };
 
-        let token = &auth_str[7..];
-        info!("🎫 Token extracted, length: {}", token.len());
+            let auth = match AuthService::new(pool.get_ref().clone()).await {
+                Ok(service) => {
+                    info!("🔧 Auth service created successfully");
+                    service
+                }
+                Err(e) => {
+                    error!("Failed to create auth service: {}", e);
+                    return Err(ErrorUnauthorized("Internal server error"));
+                }
+            };
 
-        if token.trim().is_empty() {
-            warn!("Empty token provided");
-            return ready(Err(ErrorUnauthorized("Token cannot be empty")));
-        }
-
-        let pool = match req.app_data::<web::Data<sqlx::PgPool>>() {
-            Some(pool) => {
-                info!("🗄️ Database pool found");
-                pool
-            },
-            None => {
-                error!("Database pool not found in app data");
-                return ready(Err(ErrorUnauthorized("Internal server error")));
+            // CHANGE: Add await for async verify_token
+            match auth.verify_token(token).await {
+                Ok(user_id) => {
+                    info!("🎉 Token verified successfully for user: {}", user_id);
+                    Ok(AuthenticatedUser { id: user_id })
+                }
+                Err(e) => {
+                    warn!("Token verification failed: {}", e);
+                    Err(ErrorUnauthorized("Invalid or expired token"))
+                }
             }
-        };
-
-        let auth = match AuthService::new(pool.get_ref().clone()) {
-            Ok(service) => {
-                info!("🔧 Auth service created successfully");
-                service
-            },
-            Err(e) => {
-                error!("Failed to create auth service: {}", e);
-                return ready(Err(ErrorUnauthorized("Internal server error")));
-            }
-        };
-
-        match auth.verify_token(token) {
-            Ok(user_id) => {
-                info!("🎉 Token verified successfully for user: {}", user_id);
-                ready(Ok(AuthenticatedUser { id: user_id }))
-            },
-            Err(e) => {
-                warn!("Token verification failed: {}", e);
-                ready(Err(ErrorUnauthorized("Invalid or expired token")))
-            }
-        }
+        })
     }
 }
 
@@ -99,6 +107,8 @@ pub struct UserProfile {
     pub id: Uuid,
     pub username: String,
     pub email: String,
+    pub first_name: String,
+    pub last_name: String,
     pub email_verified: bool,
     pub stellar_public_key: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
@@ -153,6 +163,8 @@ pub async fn get_user_profile(pool: &PgPool, user_id: Uuid) -> Result<UserProfil
         id: user.id,
         username: user.username,
         email: user.email,
+        first_name: user.first_name,
+        last_name: user.last_name,
         email_verified: user.email_verified,
         stellar_public_key: user.stellar_public_key,
         created_at: user.created_at,
