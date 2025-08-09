@@ -1091,12 +1091,12 @@ pub async fn pay_organizer(
         .parse::<f64>()
         .unwrap_or(5.0);
 
-    // 6. Process payment using your existing method
+    // ✅ Call send_organizer_payment (method handles both encrypted/plain text internally)
     let payout_result = match stellar
         .send_organizer_payment(&platform_secret, &organizer_wallet, total_revenue_usdc)
         .await
     {
-        Ok(result) => result, // result is OrganizerPaymentResult
+        Ok(result) => result,
         Err(e) => {
             error!("Failed to process organizer payout: {}", e);
             let error_message = if e.to_string().contains("insufficient") {

@@ -438,10 +438,10 @@ impl StellarService {
 
     pub async fn send_payment(
         &self,
-        user_secret: &str,
+        user_secret_encrypted: &str,     // ✅ NOW ACCEPTS ENCRYPTED KEYS
         recipient_public: &str,
         usdc_amount: &str,
-        sponsor_secret: &str,
+        sponsor_secret_encrypted: &str,  // ✅ NOW ACCEPTS ENCRYPTED KEYS
     ) -> Result<SponsoredPaymentResult> {
         info!(
             "💳 Sending sponsored USDC payment: {} USDC from user to {}",
@@ -457,11 +457,22 @@ impl StellarService {
             return Err(anyhow!("Payment amount must be greater than 0"));
         }
 
-        let user_keypair = Keypair::from_secret(user_secret)
+        // ✅ DECRYPT USER SECRET KEY (following your existing pattern)
+        let crypto = crate::services::crypto::KeyEncryption::new()
+            .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
+        let user_secret = crypto
+            .decrypt_secret_key(user_secret_encrypted)
+            .map_err(|e| anyhow!("Failed to decrypt user secret key: {}", e))?;
+
+        // ✅ DECRYPT SPONSOR SECRET KEY
+        let sponsor_secret = crypto
+            .decrypt_secret_key(sponsor_secret_encrypted)
+            .map_err(|e| anyhow!("Failed to decrypt sponsor secret key: {}", e))?;
+
+        let user_keypair = Keypair::from_secret(&user_secret)
             .map_err(|e| anyhow!("Invalid user secret key: {:?}", e))?;
-        let sponsor_keypair = Keypair::from_secret(sponsor_secret)
+        let sponsor_keypair = Keypair::from_secret(&sponsor_secret)
             .map_err(|e| anyhow!("Invalid sponsor secret key: {:?}", e))?;
-        // let sponsor_public_key = sponsor_keypair.public_key();
 
         if !self.is_valid_public_key(recipient_public) {
             return Err(anyhow!(
@@ -492,6 +503,7 @@ impl StellarService {
             result.transaction_hash
         );
         Ok(result)
+        // ✅ user_secret and sponsor_secret go out of scope here (automatic cleanup)
     }
 
     /// Sponsor pre-funds user with minimal XLM for transaction fees (if needed)
@@ -610,31 +622,9 @@ impl StellarService {
     }
 
     /// Send USDC payment with encrypted user key (backward compatibility)
-    pub async fn send_payment_with_encrypted_key(
+   pub async fn send_organizer_payment(
         &self,
-        user_secret_key_encrypted: &str,
-        receiver_public_key: &str,
-        usdc_amount: &str,
-        encrypted_sponsor_secret: &str,
-    ) -> Result<SponsoredPaymentResult> {
-        let crypto = crate::services::crypto::KeyEncryption::new()
-            .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
-        let decrypted_secret = crypto
-            .decrypt_secret_key(user_secret_key_encrypted)
-            .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
-
-        self.send_payment(
-            &decrypted_secret,
-            receiver_public_key,
-            usdc_amount,
-            encrypted_sponsor_secret,
-        )
-        .await
-    }
-
-    pub async fn send_organizer_payment(
-        &self,
-        platform_secret: &str,
+        platform_secret: &str,  // ✅ NOW ACCEPTS ENCRYPTED KEY
         recipient_public: &str,
         usdc_amount: f64,
     ) -> Result<OrganizerPaymentResult> {
@@ -649,7 +639,22 @@ impl StellarService {
             return Err(anyhow!("Payment amount must be greater than 0"));
         }
 
-        let platform_keypair = Keypair::from_secret(platform_secret)
+        // ✅ DECRYPT PLATFORM SECRET KEY (following your existing pattern)
+        let crypto = crate::services::crypto::KeyEncryption::new()
+            .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
+        
+        let platform_secret_key = match crypto.decrypt_secret_key(platform_secret) {
+            Ok(decrypted) => {
+                debug!("✅ Successfully decrypted platform secret key");
+                decrypted
+            }
+            Err(_) => {
+                debug!("ℹ️ Platform secret appears to be plain text, using directly");
+                platform_secret.to_string()
+            }
+        };
+
+        let platform_keypair = Keypair::from_secret(&platform_secret_key)
             .map_err(|e| anyhow!("Invalid platform secret key: {:?}", e))?;
 
         if !self.is_valid_public_key(recipient_public) {
@@ -701,6 +706,7 @@ impl StellarService {
 
         info!("✅ Platform payment successful: {}", tx_hash);
         Ok(result)
+        // ✅ platform_secret goes out of scope here (automatic cleanup)
     }
 
     async fn submit_transaction(&self, transaction: &Transaction) -> Result<String> {

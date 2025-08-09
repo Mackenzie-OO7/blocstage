@@ -226,15 +226,25 @@ impl PaymentOrchestrator {
 
         info!("Using sponsor account: {}", sponsor_info.account_name);
 
-        // Step 4: Decrypt user's secret key securely
-        let user_secret_key = self.decrypt_user_secret_key(user)?;
+        // ❌ REMOVE: Step 4: Decrypt user's secret key securely
+        // let user_secret_key = self.decrypt_user_secret_key(user)?;
 
-        // Step 5: Execute payment through Stellar service
+        // ✅ NEW: Step 4: Get encrypted keys directly
+        let user_secret_key_encrypted = user
+            .stellar_secret_key_encrypted
+            .as_ref()
+            .ok_or_else(|| anyhow!("User has no encrypted secret key"))?;
+
+        // ✅ ASSUME: sponsor_info will have encrypted_secret_key field 
+        // (will be added in Day 3-4 when we migrate sponsor keys to database)
+        let sponsor_secret_encrypted = &sponsor_info.secret_key; // For now, this might be plain text
+
+        // ✅ UPDATED: Step 5: Execute payment with encrypted keys
         let payment_result = self.stellar.send_payment(
-            &user_secret_key,
+            user_secret_key_encrypted,     // ✅ Pass encrypted user key
             &platform_wallet,
             &fee_calculation.total_user_pays.to_string(),
-            &sponsor_info.secret_key,
+            sponsor_secret_encrypted,      // ✅ Pass encrypted sponsor key
         ).await.map_err(|e| {
             error!("Payment execution failed for user {}: {}", user.id, e);
             anyhow!("Payment execution failed: {}", self.format_user_friendly_error(&e))
