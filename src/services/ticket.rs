@@ -72,8 +72,7 @@ impl TicketService {
                 None
             }
         };
-        sponsor_manager.initialize_sponsor_accounts().await?;
-
+        
         Ok(Self {
             pool,
             stellar,

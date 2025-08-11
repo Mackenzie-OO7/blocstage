@@ -250,16 +250,6 @@ impl PaymentOrchestrator {
             anyhow!("Payment execution failed: {}", self.format_user_friendly_error(&e))
         })?;
 
-        // Step 6: Record sponsor usage
-        self.sponsor_manager
-            .record_sponsorship_usage(&sponsor_info.public_key, payment_result.gas_fee_xlm)
-            .await
-            .map_err(|e| {
-                warn!("Failed to record sponsor usage: {}", e);
-                e
-            })
-            .ok();
-
         info!(
             "✅ Sponsored payment successful: {} USDC sent, {} XLM gas paid by sponsor {} (transaction: {})",
             payment_result.usdc_amount_sent,

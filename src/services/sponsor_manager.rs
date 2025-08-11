@@ -85,7 +85,7 @@ impl SponsorManager {
 
     /// Initialize sponsor accounts from environment variables
     pub async fn initialize_sponsor_accounts(&self) -> Result<()> {
-        info!("🔧 Initializing sponsor accounts from environment");
+        info!("🔧 Initializing sponsor accounts from database");
 
         let sponsor_accounts = self.load_sponsor_accounts_from_env()?;
 
@@ -162,16 +162,9 @@ impl SponsorManager {
         // Select the sponsor with the highest balance (or unknown balance)
         let selected_sponsor = &sponsors[0];
 
-        // Decrypt the secret key
-        let crypto = crate::services::crypto::KeyEncryption::new()
-            .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
-
         let encrypted_secret = selected_sponsor.encrypted_secret_key
             .as_ref()
             .ok_or_else(|| anyhow!("Sponsor account {} has no encrypted secret key", selected_sponsor.public_key))?;
-
-        let decrypted_secret = crypto.decrypt_secret_key(encrypted_secret)
-            .map_err(|e| anyhow!("Failed to decrypt sponsor secret key: {}", e))?;
 
         let current_balance = selected_sponsor.current_balance
             .as_ref()
@@ -179,7 +172,7 @@ impl SponsorManager {
             .unwrap_or(0.0);
 
         Ok(SponsorAccountInfo {
-            secret_key: decrypted_secret,
+            secret_key: encrypted_secret.clone(),
             public_key: selected_sponsor.public_key.clone(),
             account_name: selected_sponsor.account_name.clone(),
             current_balance,
