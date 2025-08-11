@@ -2,17 +2,21 @@ use crate::controllers::admin_filters::{
     AdminEventFilters, AdminEventView, PageInfo, PaginatedEventsResponse,
 };
 use crate::middleware::auth::AuthenticatedUser;
-use crate::models::event::{CreateEventRequest, Event, SearchEventsRequest, UpdateEventRequest};
+use crate::models::event::{CreateEventRequest, Event, SearchEventsRequest, UpdateEventRequest, EventSession, CreateEventSessionRequest, UpdateEventSessionRequest, EventWithSessions};
 use crate::models::event_organizer::{
     AddOrganizerRequest, EventOrganizer, UpdateOrganizerPermissionsRequest,
 };
 use crate::models::User;
 use crate::services::StellarService;
+use actix_multipart::Multipart;
 use actix_web::{web, HttpResponse, Responder};
+use anyhow::Result;
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
+use futures_util::stream::StreamExt as _;
+use tokio::io::AsyncWriteExt;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -77,12 +81,12 @@ pub async fn create_event(
 
     // Attempt to create event
     match Event::create(&pool, user.id, event_data.into_inner()).await {
-        Ok(event) => {
+        Ok(event_with_sessions) => {
             info!(
                 "✅ Event created successfully: {} by verified user {}",
-                event.id, user.id
+                event_with_sessions.event.id, user.id
             );
-            HttpResponse::Created().json(event)
+            HttpResponse::Created().json(event_with_sessions)
         }
         Err(e) => {
             error!("❌ Failed to create event for user {}: {}", user.id, e);
@@ -534,6 +538,431 @@ pub async fn update_organizer_permissions(
             })
         }
     }
+}
+
+pub async fn get_event_with_sessions(
+    pool: web::Data<PgPool>,
+    event_id: web::Path<Uuid>,
+) -> impl Responder {
+    match Event::find_by_id_with_sessions(&pool, *event_id).await {
+        Ok(Some(event_with_sessions)) => HttpResponse::Ok().json(event_with_sessions),
+        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
+            error: "Event not found".to_string(),
+        }),
+        Err(e) => {
+            error!("Failed to fetch event with sessions: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch event. Please try again.".to_string(),
+            })
+        }
+    }
+}
+
+pub async fn get_event_sessions(
+    pool: web::Data<PgPool>,
+    event_id: web::Path<Uuid>,
+) -> impl Responder {
+    // Verify event exists
+    match Event::find_by_id(&pool, *event_id).await {
+        Ok(Some(_)) => {
+            match EventSession::find_by_event_id(&pool, *event_id).await {
+                Ok(sessions) => HttpResponse::Ok().json(sessions),
+                Err(e) => {
+                    error!("Failed to fetch event sessions: {}", e);
+                    HttpResponse::InternalServerError().json(ErrorResponse {
+                        error: "Failed to fetch sessions".to_string(),
+                    })
+                }
+            }
+        }
+        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
+            error: "Event not found".to_string(),
+        }),
+        Err(e) => {
+            error!("Failed to fetch event: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch event".to_string(),
+            })
+        }
+    }
+}
+
+pub async fn create_event_session(
+    pool: web::Data<PgPool>,
+    event_id: web::Path<Uuid>,
+    session_data: web::Json<CreateEventSessionRequest>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    // Check permission to manage event
+    let _event = match crate::middleware::auth::check_event_permission(
+        &pool,
+        user.id,
+        *event_id,
+        "edit_event",
+    )
+    .await
+    {
+        Ok(event) => event,
+        Err(response) => return response,
+    };
+
+    match EventSession::create(&pool, *event_id, session_data.into_inner()).await {
+        Ok(session) => {
+            info!(
+                "Session created: {} for event {} by user {}",
+                session.id, event_id, user.id
+            );
+            HttpResponse::Created().json(session)
+        }
+        Err(e) => {
+            error!("Failed to create session: {}", e);
+            
+            let error_message = if e.to_string().contains("Session") && e.to_string().contains("must be within event timeframe") {
+                "Session times must be within the event timeframe"
+            } else if e.to_string().contains("duration must be at least") {
+                "Session duration must be at least 5 minutes"
+            } else if e.to_string().contains("end time must be after start time") {
+                "Session end time must be after start time"
+            } else {
+                "Failed to create session"
+            };
+
+            HttpResponse::BadRequest().json(ErrorResponse {
+                error: error_message.to_string(),
+            })
+        }
+    }
+}
+
+pub async fn update_event_session(
+    pool: web::Data<PgPool>,
+    path: web::Path<(Uuid, Uuid)>,
+    session_data: web::Json<UpdateEventSessionRequest>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let (event_id, session_id) = path.into_inner();
+
+    // Check permission to manage event
+    let _event = match crate::middleware::auth::check_event_permission(
+        &pool,
+        user.id,
+        event_id,
+        "edit_event",
+    )
+    .await
+    {
+        Ok(event) => event,
+        Err(response) => return response,
+    };
+
+    // Find the session
+    let session = match EventSession::find_by_id(&pool, session_id).await {
+        Ok(Some(session)) => {
+            if session.event_id != event_id {
+                return HttpResponse::NotFound().json(ErrorResponse {
+                    error: "Session not found for this event".to_string(),
+                });
+            }
+            session
+        }
+        Ok(None) => {
+            return HttpResponse::NotFound().json(ErrorResponse {
+                error: "Session not found".to_string(),
+            });
+        }
+        Err(e) => {
+            error!("Failed to fetch session: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch session".to_string(),
+            });
+        }
+    };
+
+    match session.update(&pool, session_data.into_inner()).await {
+        Ok(updated_session) => {
+            info!(
+                "Session updated: {} for event {} by user {}",
+                session_id, event_id, user.id
+            );
+            HttpResponse::Ok().json(updated_session)
+        }
+        Err(e) => {
+            error!("Failed to update session: {}", e);
+            HttpResponse::BadRequest().json(ErrorResponse {
+                error: "Failed to update session".to_string(),
+            })
+        }
+    }
+}
+
+pub async fn delete_event_session(
+    pool: web::Data<PgPool>,
+    path: web::Path<(Uuid, Uuid)>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let (event_id, session_id) = path.into_inner();
+
+    // Check permission to manage event
+    let _event = match crate::middleware::auth::check_event_permission(
+        &pool,
+        user.id,
+        event_id,
+        "edit_event",
+    )
+    .await
+    {
+        Ok(event) => event,
+        Err(response) => return response,
+    };
+
+    // Find the session
+    let session = match EventSession::find_by_id(&pool, session_id).await {
+        Ok(Some(session)) => {
+            if session.event_id != event_id {
+                return HttpResponse::NotFound().json(ErrorResponse {
+                    error: "Session not found for this event".to_string(),
+                });
+            }
+            session
+        }
+        Ok(None) => {
+            return HttpResponse::NotFound().json(ErrorResponse {
+                error: "Session not found".to_string(),
+            });
+        }
+        Err(e) => {
+            error!("Failed to fetch session: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch session".to_string(),
+            });
+        }
+    };
+
+    match session.delete(&pool).await {
+        Ok(_) => {
+            info!(
+                "Session deleted: {} from event {} by user {}",
+                session_id, event_id, user.id
+            );
+            HttpResponse::Ok().json(serde_json::json!({
+                "message": "Session deleted successfully"
+            }))
+        }
+        Err(e) => {
+            error!("Failed to delete session: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to delete session".to_string(),
+            })
+        }
+    }
+}
+
+pub async fn reorder_event_sessions(
+    pool: web::Data<PgPool>,
+    event_id: web::Path<Uuid>,
+    reorder_data: web::Json<Vec<(Uuid, i32)>>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    // Check permission to manage event
+    let _event = match crate::middleware::auth::check_event_permission(
+        &pool,
+        user.id,
+        *event_id,
+        "edit_event",
+    )
+    .await
+    {
+        Ok(event) => event,
+        Err(response) => return response,
+    };
+
+    match EventSession::reorder_sessions(&pool, *event_id, reorder_data.into_inner()).await {
+        Ok(_) => {
+            info!(
+                "Sessions reordered for event {} by user {}",
+                event_id, user.id
+            );
+            HttpResponse::Ok().json(serde_json::json!({
+                "message": "Sessions reordered successfully"
+            }))
+        }
+        Err(e) => {
+            error!("Failed to reorder sessions: {}", e);
+            HttpResponse::BadRequest().json(ErrorResponse {
+                error: "Failed to reorder sessions".to_string(),
+            })
+        }
+    }
+}
+
+
+pub async fn upload_session_file(
+    pool: web::Data<PgPool>,
+    path: web::Path<(Uuid, Uuid)>,
+    mut payload: Multipart,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let (event_id, session_id) = path.into_inner();
+
+    // Check permission to manage event
+    let _event = match crate::middleware::auth::check_event_permission(
+        &pool,
+        user.id,
+        event_id,
+        "edit_event",
+    )
+    .await
+    {
+        Ok(event) => event,
+        Err(response) => return response,
+    };
+
+    // Find the session
+    let session = match EventSession::find_by_id(&pool, session_id).await {
+        Ok(Some(session)) => {
+            if session.event_id != event_id {
+                return HttpResponse::NotFound().json(ErrorResponse {
+                    error: "Session not found for this event".to_string(),
+                });
+            }
+            session
+        }
+        Ok(None) => {
+            return HttpResponse::NotFound().json(ErrorResponse {
+                error: "Session not found".to_string(),
+            });
+        }
+        Err(e) => {
+            error!("Failed to fetch session: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch session".to_string(),
+            });
+        }
+    };
+
+    // Process file upload
+    while let Some(item) = payload.next().await {
+        let mut field = match item {
+            Ok(field) => field,
+            Err(e) => {
+                error!("Failed to read multipart field: {}", e);
+                return HttpResponse::BadRequest().json(ErrorResponse {
+                    error: "Invalid file upload".to_string(),
+                });
+            }
+        };
+
+        // Extract filename and field info FIRST (to drop immutable borrow)
+        let (field_name, filename) = {
+            if let Some(content_disposition) = field.content_disposition() {
+                let field_name = content_disposition.get_name().map(|s| s.to_string());
+                let filename = content_disposition
+                    .get_filename()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "session_file".to_string());
+                (field_name, filename)
+            } else {
+                (None, "session_file".to_string())
+            }
+        }; // <-- Immutable borrow ends here
+
+        // Now we can use mutable borrow
+        if field_name.as_deref() == Some("file") {
+            // Validate file type (basic security)
+            let allowed_extensions = vec!["pdf", "doc", "docx", "ppt", "pptx", "txt", "jpg", "jpeg", "png"];
+            let file_extension = std::path::Path::new(&filename)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            if !allowed_extensions.contains(&file_extension.as_str()) {
+                return HttpResponse::BadRequest().json(ErrorResponse {
+                    error: "File type not allowed. Allowed types: PDF, DOC, DOCX, PPT, PPTX, TXT, JPG, JPEG, PNG".to_string(),
+                });
+            }
+
+            // Generate unique filename
+            let unique_filename = format!(
+                "{}_{}_{}",
+                session_id,
+                chrono::Utc::now().timestamp(),
+                filename
+            );
+
+            // Save file (now we can use mutable borrow)
+            match save_session_file(&mut field, &event_id, &unique_filename).await {
+                Ok(file_url) => {
+                    // Update session with file URL
+                    match session.set_file_url(&pool, &file_url).await {
+                        Ok(updated_session) => {
+                            info!(
+                                "File uploaded for session {}: {} by user {}",
+                                session_id, filename, user.id
+                            );
+                            return HttpResponse::Ok().json(serde_json::json!({
+                                "message": "File uploaded successfully",
+                                "file_url": file_url,
+                                "session": updated_session
+                            }));
+                        }
+                        Err(e) => {
+                            error!("Failed to update session with file URL: {}", e);
+                            return HttpResponse::InternalServerError().json(ErrorResponse {
+                                error: "File uploaded but failed to link to session".to_string(),
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to save session file: {}", e);
+                    return HttpResponse::InternalServerError().json(ErrorResponse {
+                        error: "Failed to upload file".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    HttpResponse::BadRequest().json(ErrorResponse {
+        error: "No file provided".to_string(),
+    })
+}
+
+// Helper function for file upload
+async fn save_session_file(
+    field: &mut actix_multipart::Field,
+    event_id: &Uuid,
+    filename: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let storage_dir = std::env::var("LOCAL_STORAGE_DIR").unwrap_or_else(|_| "storage".to_string());
+    let file_path = format!("sessions/{}/{}", event_id, filename);
+    let full_path = std::path::Path::new(&storage_dir).join(&file_path);
+
+    // Create directory if it doesn't exist
+    if let Some(parent) = full_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    // Save file
+    let mut file = tokio::fs::File::create(&full_path).await?;
+    let mut total_size = 0;
+    const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
+
+    while let Some(chunk) = field.next().await {
+        let data = chunk?;
+        total_size += data.len();
+        
+        if total_size > MAX_FILE_SIZE {
+            return Err("File size exceeds 10MB limit".into());
+        }
+        
+        file.write_all(&data).await?;
+    }
+
+    // Return URL
+    let app_url = std::env::var("APP_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    Ok(format!("{}/storage/{}", app_url, file_path))
 }
 
 // ADMIN ENDPOINTS
@@ -1184,7 +1613,14 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route(
                 "/{event_id}/organizers/{user_id}/permissions",
                 web::put().to(update_organizer_permissions),
-            ),
+            )
+            .route("/{event_id}/with-sessions", web::get().to(get_event_with_sessions))
+            .route("/{event_id}/sessions", web::get().to(get_event_sessions))
+            .route("/{event_id}/sessions", web::post().to(create_event_session))
+            .route("/{event_id}/sessions/reorder", web::put().to(reorder_event_sessions))
+            .route("/{event_id}/sessions/{session_id}", web::put().to(update_event_session))
+            .route("/{event_id}/sessions/{session_id}", web::delete().to(delete_event_session))
+            .route("/{event_id}/sessions/{session_id}/upload", web::post().to(upload_session_file)),
     )
     .service(
         web::scope("/admin/events")

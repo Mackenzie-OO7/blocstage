@@ -109,8 +109,8 @@ impl User {
             id,
             user.username,
             user.email,
-            user.first_name, // ADD this
-            user.last_name,  // ADD this
+            user.first_name,
+            user.last_name,
             password_hash,
             now,
             now,
