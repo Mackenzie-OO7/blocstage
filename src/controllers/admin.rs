@@ -1,14 +1,31 @@
 use crate::middleware::auth::AuthenticatedUser;
 use crate::services::event::EventService;
 use crate::services::fee_calculator::FeeCalculator;
-use crate::services::sponsor_manager::SponsorManager;
+use crate::services::sponsor_manager::{SponsorManager, CreateSponsorRequest, UpdateSponsorRequest};
 use actix_web::{web, HttpResponse, Responder};
-use log::info;
-use serde::Deserialize;
+use log::{error, info};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::PgPool;
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub struct UpdateSponsorshipFeeRequest {
     pub new_percentage: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlatformRevenueResponse {
+    pub total_usdc: f64,
+    pub sponsorship_fees_usdc: f64,
+    pub platform_fees_usdc: f64,
+    pub transaction_count: i64,
+    pub last_30_days_usdc: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ErrorResponse {
+    pub error: String,
 }
 
 /// Get sponsor account statistics
@@ -187,6 +204,251 @@ pub async fn get_pending_payouts(
     }
 }
 
+/// Add a new sponsor account
+pub async fn add_sponsor_account(
+    pool: web::Data<PgPool>,
+    req: web::Json<CreateSponsorRequest>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+
+    let sponsor_manager = match SponsorManager::new(pool.get_ref().clone()) {
+        Ok(manager) => manager,
+        Err(e) => {
+            error!("Failed to initialize sponsor manager: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            });
+        }
+    };
+
+    match sponsor_manager.add_sponsor_account(req.into_inner()).await {
+        Ok(sponsor) => {
+            info!("Admin {} added new sponsor account: {}", user.id, sponsor.account_name);
+            HttpResponse::Created().json(json!({
+                "message": "Sponsor account added successfully",
+                "sponsor": {
+                    "id": sponsor.id,
+                    "account_name": sponsor.account_name,
+                    "public_key": sponsor.public_key,
+                    "is_active": sponsor.is_active,
+                    "created_at": sponsor.created_at
+                }
+            }))
+        }
+        Err(e) => {
+            error!("Failed to add sponsor account: {}", e);
+            HttpResponse::BadRequest().json(ErrorResponse {
+                error: format!("Failed to add sponsor account: {}", e),
+            })
+        }
+    }
+}
+
+/// Update/replace an existing sponsor account
+pub async fn update_sponsor_account(
+    pool: web::Data<PgPool>,
+    req: web::Json<UpdateSponsorRequest>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+
+    let sponsor_manager = match SponsorManager::new(pool.get_ref().clone()) {
+        Ok(manager) => manager,
+        Err(e) => {
+            error!("Failed to initialize sponsor manager: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            });
+        }
+    };
+
+    match sponsor_manager.update_sponsor_account(req.into_inner()).await {
+        Ok(sponsor) => {
+            info!("Admin {} updated sponsor account: {}", user.id, sponsor.account_name);
+            HttpResponse::Ok().json(json!({
+                "message": "Sponsor account updated successfully",
+                "sponsor": {
+                    "id": sponsor.id,
+                    "account_name": sponsor.account_name,
+                    "public_key": sponsor.public_key,
+                    "is_active": sponsor.is_active,
+                    "updated_at": sponsor.updated_at
+                }
+            }))
+        }
+        Err(e) => {
+            error!("Failed to update sponsor account: {}", e);
+            HttpResponse::BadRequest().json(ErrorResponse {
+                error: format!("Failed to update sponsor account: {}", e),
+            })
+        }
+    }
+}
+
+/// Deactivate a sponsor account
+pub async fn deactivate_sponsor(
+    pool: web::Data<PgPool>,
+    path: web::Path<Uuid>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+
+    let sponsor_id = path.into_inner();
+    let sponsor_manager = match SponsorManager::new(pool.get_ref().clone()) {
+        Ok(manager) => manager,
+        Err(e) => {
+            error!("Failed to initialize sponsor manager: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            });
+        }
+    };
+
+    match sponsor_manager.deactivate_sponsor_by_id(sponsor_id).await {
+        Ok(sponsor) => {
+            info!("Admin {} deactivated sponsor account: {}", user.id, sponsor.account_name);
+            HttpResponse::Ok().json(json!({
+                "message": "Sponsor account deactivated successfully",
+                "sponsor": {
+                    "id": sponsor.id,
+                    "account_name": sponsor.account_name,
+                    "public_key": sponsor.public_key,
+                    "is_active": sponsor.is_active
+                }
+            }))
+        }
+        Err(e) => {
+            error!("Failed to deactivate sponsor account: {}", e);
+            HttpResponse::BadRequest().json(ErrorResponse {
+                error: format!("Failed to deactivate sponsor account: {}", e),
+            })
+        }
+    }
+}
+
+/// Reactivate a sponsor account
+pub async fn reactivate_sponsor(
+    pool: web::Data<PgPool>,
+    path: web::Path<Uuid>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+
+    let sponsor_id = path.into_inner();
+    let sponsor_manager = match SponsorManager::new(pool.get_ref().clone()) {
+        Ok(manager) => manager,
+        Err(e) => {
+            error!("Failed to initialize sponsor manager: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            });
+        }
+    };
+
+    match sponsor_manager.reactivate_sponsor_by_id(sponsor_id).await {
+        Ok(sponsor) => {
+            info!("Admin {} reactivated sponsor account: {}", user.id, sponsor.account_name);
+            HttpResponse::Ok().json(json!({
+                "message": "Sponsor account reactivated successfully",
+                "sponsor": {
+                    "id": sponsor.id,
+                    "account_name": sponsor.account_name,
+                    "public_key": sponsor.public_key,
+                    "is_active": sponsor.is_active
+                }
+            }))
+        }
+        Err(e) => {
+            error!("Failed to reactivate sponsor account: {}", e);
+            HttpResponse::BadRequest().json(ErrorResponse {
+                error: format!("Failed to reactivate sponsor account: {}", e),
+            })
+        }
+    }
+}
+
+/// List all sponsor accounts with their status
+pub async fn list_sponsors(
+    pool: web::Data<PgPool>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+
+    let sponsor_manager = match SponsorManager::new(pool.get_ref().clone()) {
+        Ok(manager) => manager,
+        Err(e) => {
+            error!("Failed to initialize sponsor manager: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            });
+        }
+    };
+
+    match sponsor_manager.list_all_sponsors().await {
+        Ok(sponsors) => HttpResponse::Ok().json(json!({
+            "sponsors": sponsors,
+            "total_count": sponsors.len()
+        })),
+        Err(e) => {
+            error!("Failed to list sponsor accounts: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to retrieve sponsor accounts".to_string(),
+            })
+        }
+    }
+}
+
+/// Get a specific sponsor account by ID
+pub async fn get_sponsor_by_id(
+    pool: web::Data<PgPool>,
+    path: web::Path<Uuid>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
+
+    let sponsor_id = path.into_inner();
+    let sponsor_manager = match SponsorManager::new(pool.get_ref().clone()) {
+        Ok(manager) => manager,
+        Err(e) => {
+            error!("Failed to initialize sponsor manager: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Internal server error".to_string(),
+            });
+        }
+    };
+
+    match sponsor_manager.get_sponsor_by_id(sponsor_id).await {
+        Ok(sponsor) => HttpResponse::Ok().json(json!({
+            "sponsor": sponsor
+        })),
+        Err(e) => {
+            error!("Failed to get sponsor account: {}", e);
+            HttpResponse::NotFound().json(ErrorResponse {
+                error: "Sponsor account not found".to_string(),
+            })
+        }
+    }
+}
+
 /// Process all pending event payouts
 pub async fn process_event_payouts(
     pool: web::Data<sqlx::PgPool>,
@@ -244,6 +506,12 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             // Sponsor account management  
             .route("/sponsors/statistics", web::get().to(get_sponsor_statistics))
             .route("/sponsors/refresh-balances", web::post().to(refresh_sponsor_balances))
+            .route("/sponsors", web::get().to(list_sponsors))
+            .route("/sponsors", web::post().to(add_sponsor_account))
+            .route("/sponsors/{sponsor_id}", web::get().to(get_sponsor_by_id))
+            .route("/sponsors/{sponsor_id}", web::put().to(update_sponsor_account))
+            .route("/sponsors/{sponsor_id}/deactivate", web::post().to(deactivate_sponsor))
+            .route("/sponsors/{sponsor_id}/reactivate", web::post().to(reactivate_sponsor))
             
             // Event payouts
             .route("/payouts/pending", web::get().to(get_pending_payouts))
