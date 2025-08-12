@@ -21,22 +21,14 @@ impl SmtpProvider {
         let smtp_username = env::var("SMTP_USERNAME").unwrap_or_default();
         let smtp_password = env::var("SMTP_PASSWORD").unwrap_or_default();
 
-        // let mut builder = SmtpTransport::relay(&smtp_server)?;
-
-        // if !smtp_username.is_empty() && !smtp_password.is_empty() {
-        //     let creds = Credentials::new(smtp_username, smtp_password);
-        //     builder = builder.credentials(creds);
-        // }
-
-        // let mailer = builder.build();
 
         let mailer = if smtp_server == "localhost" || smtp_server == "127.0.0.1" {
-            // For MailHog - no TLS, no auth
+            // MailHog: no TLS, no auth
             SmtpTransport::builder_dangerous(&smtp_server)
                 .port(smtp_port)
                 .build()
         } else {
-            // For real SMTP servers - use TLS and auth
+            // real SMTP servers:use TLS and auth
             let mut builder = SmtpTransport::relay(&smtp_server)?
                 .port(smtp_port);
 
@@ -47,9 +39,6 @@ impl SmtpProvider {
 
             builder.build()
         };
-
-        // let mailer = builder.build();
-
         log::info!("✅ SMTP provider initialized: {}:{}", smtp_server, smtp_port);
 
         Ok(Self { mailer })
@@ -59,15 +48,6 @@ impl SmtpProvider {
 #[async_trait::async_trait]
 impl EmailProvider for SmtpProvider {
     async fn send_email(&self, request: EmailRequest) -> Result<String> {
-        // NOTE: In development, just log the email instead of sending
-        // if env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()) == "development" {
-        //     log::info!("📧 [DEV] Would send email:");
-        //     log::info!("   To: {} <{}>", request.to_name.unwrap_or_default(), request.to);
-        //     log::info!("   Subject: {}", request.subject);
-        //     log::info!("   HTML Body: {}", &request.html_body[0..100.min(request.html_body.len())]);
-        //     return Ok("dev-message-id".to_string());
-        // }
-
         let email = Message::builder()
             .from(format!("{} <{}>", 
                 request.from_name.unwrap_or_else(|| "BlocStage".to_string()), 
@@ -80,12 +60,11 @@ impl EmailProvider for SmtpProvider {
             .subject(request.subject)
             .body(request.html_body)?;
 
-        let response = self.mailer.send(&email)?;
+        let _response = self.mailer.send(&email)?;
         Ok(format!("smtp-{}", uuid::Uuid::new_v4().to_string()))
     }
 
     async fn health_check(&self) -> Result<bool> {
-        // For SMTP, we'll just check if we can create the transport
         Ok(true)
     }
 
@@ -160,7 +139,7 @@ impl EmailProvider for SendGridProvider {
             .await?;
 
         if response.status().is_success() {
-            // SendGrid returns the message ID in the X-Message-Id header
+            // (sendGrid returns the message ID in the X-Message-Id header)
             let message_id = response
                 .headers()
                 .get("X-Message-Id")

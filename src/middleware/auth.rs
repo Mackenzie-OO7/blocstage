@@ -4,11 +4,10 @@ use crate::models::EventOrganizer;
 use crate::services::auth::AuthService;
 use actix_web::{
     dev::Payload, error::ErrorUnauthorized, http, web, Error, FromRequest, HttpRequest,
-    HttpResponse, Result as ActixResult,
+    HttpResponse
 };
-use futures::future::{ready, Ready};
-use log::{debug, error, info, warn};
-use serde::{Deserialize, Serialize};
+use log::{error, info, warn};
+use serde::{Serialize};
 use sqlx::PgPool;
 use std::future::Future;
 use std::pin::Pin;
@@ -21,13 +20,12 @@ pub struct AuthenticatedUser {
 
 impl FromRequest for AuthenticatedUser {
     type Error = Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + 'static>>; // ← CHANGE this
+    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>> + 'static>>;
 
     fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
-        let req = req.clone(); // Clone for the async block
+        let req = req.clone();
 
         Box::pin(async move {
-            // ← CHANGE: Make this async
             info!("Auth middleware called for: {}", req.path());
 
             let auth_header = match req.headers().get(http::header::AUTHORIZATION) {
@@ -87,7 +85,6 @@ impl FromRequest for AuthenticatedUser {
                 }
             };
 
-            // CHANGE: Add await for async verify_token
             match auth.verify_token(token).await {
                 Ok(user_id) => {
                     info!("🎉 Token verified successfully for user: {}", user_id);
@@ -135,7 +132,6 @@ struct ErrorResponse {
     error: String,
 }
 
-// for profile endpoints, to get full user details
 pub async fn get_user_profile(pool: &PgPool, user_id: Uuid) -> Result<UserProfile, HttpResponse> {
     let user = match User::find_by_id(pool, user_id).await {
         Ok(Some(user)) => user,
@@ -172,7 +168,6 @@ pub async fn get_user_profile(pool: &PgPool, user_id: Uuid) -> Result<UserProfil
     })
 }
 
-// check if user has admin role
 pub async fn require_admin_user(pool: &PgPool, user_id: Uuid) -> Result<User, HttpResponse> {
     let user = match User::find_by_id(pool, user_id).await {
         Ok(Some(user)) => user,
@@ -239,7 +234,6 @@ pub async fn require_verified_user(pool: &PgPool, user_id: Uuid) -> Result<User,
     Ok(user)
 }
 
-// verify user owns an event
 pub async fn check_event_ownership(
     pool: &PgPool,
     user_id: Uuid,
@@ -294,7 +288,6 @@ pub async fn check_event_ownership(
     Ok(event)
 }
 
-// fetch basic user info for UI
 pub async fn get_user_display_info(
     pool: &PgPool,
     user_id: Uuid,

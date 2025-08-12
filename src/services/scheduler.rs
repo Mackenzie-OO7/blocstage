@@ -19,8 +19,7 @@ impl SchedulerService {
         
         // Start event status update job (runs every 5 minutes)
         tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_secs(300)); // 5 minutes
-            
+            let mut interval = time::interval(Duration::from_secs(300));
             loop {
                 interval.tick().await;
                 
@@ -44,7 +43,7 @@ impl SchedulerService {
         Ok(())
     }
 
-    /// Cleanup old cancelled items (optional - maybe run weekly?)
+    /// Cleanup old cancelled items (maybe run weekly?)
     pub async fn start_cleanup_tasks(&self) {
         let pool = self.pool.clone();
         

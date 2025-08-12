@@ -5,12 +5,11 @@ use crate::models::user::{
 };
 use crate::services::auth::AuthService;
 use crate::services::RedisService;
-use actix_web::{web, HttpRequest, HttpResponse, Responder, ResponseError};
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use log::{error, info, warn};
-use serde::{Deserialize, Serialize};
+use serde::{Serialize};
 use sqlx::PgPool;
 use std::fmt;
-use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
@@ -34,7 +33,6 @@ pub async fn register(
 ) -> impl Responder {
     info!("👤 Registration attempt for email: {}", user_data.email);
 
-    // Input validation
     if user_data.email.trim().is_empty()
         || user_data.username.trim().is_empty()
         || user_data.password.trim().is_empty()
@@ -169,7 +167,6 @@ pub async fn verify_email(
         &data.token[0..10.min(data.token.len())]
     );
 
-    // Input validation
     if data.token.trim().is_empty() {
         warn!("❌ Email verification failed: Empty token provided");
         return HttpResponse::BadRequest().json(ErrorResponse {
@@ -228,14 +225,12 @@ pub async fn request_password_reset(
 ) -> impl Responder {
     info!("🔑 Password reset request for email: {}", data.email);
 
-    // Input validation
     if data.email.trim().is_empty() {
         return HttpResponse::BadRequest().json(ErrorResponse {
             error: "Email is required.".to_string(),
         });
     }
 
-    // Basic email format validation
     if !data.email.contains('@') || data.email.len() > 255 {
         return HttpResponse::BadRequest().json(ErrorResponse {
             error: "Invalid email format.".to_string(),
@@ -266,7 +261,6 @@ pub async fn request_password_reset(
         Err(e) => {
             error!("Password reset request failed: {}", e);
 
-            // Handle specific error cases while maintaining security
             if e.to_string().contains("wait before requesting") {
                 HttpResponse::TooManyRequests().json(ErrorResponse {
                     error: "Please wait before requesting another password reset.".to_string(),
@@ -276,7 +270,6 @@ pub async fn request_password_reset(
                     error: "Please verify your email before requesting password reset.".to_string(),
                 })
             } else {
-                // For all other errors, return generic success message to prevent email enumeration
                 HttpResponse::Ok().json(SuccessResponse {
                     message: "If your email is registered, a password reset link has been sent."
                         .to_string(),
@@ -295,7 +288,6 @@ pub async fn reset_password(
         &data.token[0..10.min(data.token.len())]
     );
 
-    // Input validation
     if data.token.trim().is_empty() {
         return HttpResponse::BadRequest().json(ErrorResponse {
             error: "Reset token is required.".to_string(),
@@ -315,7 +307,6 @@ pub async fn reset_password(
         });
     }
 
-    // Password strength validation
     if data.new_password.len() < 8 {
         return HttpResponse::BadRequest().json(ErrorResponse {
             error: "Password must be at least 8 characters long.".to_string(),
@@ -370,7 +361,6 @@ pub async fn logout(
     req: HttpRequest,
     user: AuthenticatedUser,
 ) -> impl Responder {
-    // Extract token from request header
     let token = match req.headers().get("authorization") {
         Some(header) => match header.to_str() {
             Ok(auth_str) if auth_str.starts_with("Bearer ") => &auth_str[7..],
@@ -413,7 +403,6 @@ pub async fn logout(
     }
 }
 
-// ADD this logout from all devices controller function
 pub async fn logout_all(pool: web::Data<sqlx::PgPool>, user: AuthenticatedUser) -> impl Responder {
     let auth = match AuthService::new(pool.get_ref().clone()).await {
         Ok(service) => service,
@@ -469,7 +458,7 @@ pub async fn delete_account(
 }
 
 pub async fn get_active_sessions(
-    pool: web::Data<sqlx::PgPool>,
+    _pool: web::Data<sqlx::PgPool>,
     user: AuthenticatedUser,
 ) -> impl Responder {
     let redis = match RedisService::new().await {
@@ -504,7 +493,7 @@ pub async fn get_active_sessions(
 
 // ADD: Revoke specific session endpoint
 pub async fn revoke_session(
-    pool: web::Data<sqlx::PgPool>,
+    _pool: web::Data<sqlx::PgPool>,
     path: web::Path<String>, // JWT ID
     user: AuthenticatedUser,
 ) -> impl Responder {
@@ -543,10 +532,8 @@ pub async fn revoke_session(
 }
 
 fn extract_ip_address(req: &HttpRequest) -> Option<String> {
-    // Try X-Forwarded-For first (for proxies/load balancers)
     if let Some(forwarded_for) = req.headers().get("x-forwarded-for") {
         if let Ok(forwarded_str) = forwarded_for.to_str() {
-            // Take the first IP if multiple are present
             if let Some(first_ip) = forwarded_str.split(',').next() {
                 return Some(first_ip.trim().to_string());
             }
@@ -560,9 +547,7 @@ fn extract_ip_address(req: &HttpRequest) -> Option<String> {
         }
     }
 
-    // Fall back to connection info
-    req.connection_info().remote_addr().map(|addr| {
-        // Remove port if present
+    req.connection_info().peer_addr().map(|addr| {
         if let Some(ip) = addr.split(':').next() {
             ip.to_string()
         } else {

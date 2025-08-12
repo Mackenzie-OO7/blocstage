@@ -1,21 +1,12 @@
-use crate::models::{Event, Ticket, Transaction, User};
+use crate::models::{Event, Transaction, User};
 use crate::services::stellar::StellarService;
 use anyhow::{anyhow, Result};
-use bigdecimal::{BigDecimal, FromPrimitive};
+use bigdecimal::{BigDecimal,};
 use chrono::{DateTime, Duration, Utc};
-use log::{error, info, warn};
+use log::{error, info};
 use sqlx::PgPool;
 use std::env;
 use uuid::Uuid;
-
-#[derive(Debug, Clone)]
-pub enum PaymentMethod {
-    StellarWallet,
-    BankTransfer,
-    Paystack,
-    Link,
-    // TODO: actually check the payment methods you want to implement
-}
 
 pub struct EventService {
     pool: PgPool,
@@ -84,49 +75,10 @@ impl EventService {
         Ok(results)
     }
 
-    // // Process payout for a single event using the selected payment method
-    // async fn process_single_event_payment(&self, event: &Event) -> Result<String> {
-    //     let total_revenue = self.calculate_event_revenue(event.id).await?;
-
-    //     let organizer = User::find_by_id(&self.pool, event.organizer_id)
-    //         .await?
-    //         .ok_or_else(|| anyhow!("Organizer not found"))?;
-
-    //     let organizer_wallet = organizer
-    //         .stellar_public_key
-    //         .ok_or_else(|| anyhow!("Organizer has no Stellar wallet"))?;
-
-    //     let platform_secret_key = env::var("PLATFORM_PAYMENT_SECRET")
-    //         .map_err(|_| anyhow!("Platform payment secret not configured"))?;
-
-    //     // TODO: consider not hard-coding this? finalize revenue convo first
-    //     let platform_fee_percentage = 5.0;
-
-    //     // Use the new payment method
-    //     let tx_hash = self
-    //         .pay_event_organizer(
-    //             &platform_secret_key,
-    //             &organizer_wallet,
-    //             total_revenue,
-    //             platform_fee_percentage,
-    //         )
-    //         .await?;
-
-    //     info!(
-    //         "Paid organizer {} for event {}: {} XLM (tx: {})",
-    //         organizer.username,
-    //         event.id,
-    //         total_revenue * 0.95,
-    //         tx_hash
-    //     );
-
-    //     Ok(tx_hash)
-    // }
-
     async fn process_single_event_payout(&self, event: &Event) -> Result<String> {
         info!("💰 Processing USDC payout for event: {}", event.title);
 
-        // Calculate total revenue (excluding sponsorship fees which stay with platform)
+        // excluding sponsorship fees
         let total_revenue_usdc = self.calculate_event_revenue_usdc(event.id).await?;
 
         if total_revenue_usdc <= 0.0 {
@@ -156,12 +108,10 @@ impl EventService {
         let platform_secret_key = env::var("PLATFORM_PAYMENT_SECRET")
             .map_err(|_| anyhow!("Platform payment secret not configured"))?;
 
-        // Get configurable platform fee percentage
         let platform_fee_percentage = env::var("PLATFORM_FEE_PERCENTAGE")
             .unwrap_or_else(|_| "5.0".to_string())
             .parse::<f64>()?;
 
-        // Send USDC payout to organizer
         let payout_result = self
             .stellar_service
             .send_organizer_payment(
@@ -216,7 +166,6 @@ impl EventService {
     }
 
     async fn record_event_payout(&self, event_id: &Uuid, tx_hash: &str) -> Result<()> {
-        // Calculate the actual amount paid to organizer
         let total_revenue = self.calculate_event_revenue_usdc(*event_id).await?;
         let platform_fee_percentage = env::var("PLATFORM_FEE_PERCENTAGE")
             .unwrap_or_else(|_| "5.0".to_string())
@@ -265,7 +214,6 @@ impl EventService {
             .map(|amount| amount.to_string().parse::<f64>().unwrap_or(0.0))
             .unwrap_or(0.0);
 
-        // Get ticket sales count
         let ticket_count = sqlx::query!(
             r#"
             SELECT COUNT(*) as count
@@ -281,7 +229,6 @@ impl EventService {
 
         let tickets_sold = ticket_count.count.unwrap_or(0);
 
-        // Calculate platform fee
         let platform_fee_percentage = env::var("PLATFORM_FEE_PERCENTAGE")
             .unwrap_or_else(|_| "5.0".to_string())
             .parse::<f64>()?;
@@ -321,7 +268,6 @@ impl EventService {
         }))
     }
 
-    /// Get platform revenue summary for a period
     pub async fn get_platform_revenue_summary(
         &self,
         start_date: DateTime<Utc>,
@@ -332,7 +278,7 @@ impl EventService {
             .parse::<f64>()
             .unwrap_or(5.0);
 
-        // Platform fee revenue (from organizer payouts)
+        // from organizer payouts
         let platform_fees = sqlx::query!(
             r#"
         SELECT 
@@ -365,7 +311,6 @@ impl EventService {
 
         let total_platform_revenue = platform_fee_total + sponsorship_fees;
 
-        // Transaction count
         let transaction_count = sqlx::query!(
             r#"
             SELECT COUNT(*) as count
@@ -402,52 +347,6 @@ impl EventService {
             },
             "currency": "USDC"
         }))
-    }
-
-    
-
-    /// Manual payout trigger for specific event (admin function)
-    pub async fn trigger_manual_payout(&self, event_id: Uuid) -> Result<String> {
-        let event = Event::find_by_id(&self.pool, event_id)
-            .await?
-            .ok_or_else(|| anyhow!("Event not found"))?;
-
-        // Check if already paid out
-        let existing_payout = sqlx::query!(
-            "SELECT transaction_hash FROM event_payouts WHERE event_id = $1",
-            event_id
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-
-        if existing_payout.is_some() {
-            return Err(anyhow!("Event has already been paid out"));
-        }
-
-        info!("🔧 Manual payout triggered for event: {}", event.title);
-
-        let tx_hash = self.process_single_event_payout(&event).await?;
-        self.record_event_payout(&event_id, &tx_hash).await?;
-
-        Ok(tx_hash)
-    }
-
-    /// Update platform fee percentage (admin function)
-    pub async fn update_platform_fee_percentage(&self, new_percentage: f64) -> Result<()> {
-        if new_percentage < 0.0 || new_percentage > 50.0 {
-            return Err(anyhow!(
-                "Platform fee percentage must be between 0% and 50%"
-            ));
-        }
-
-        // TODO: Update environment variable or database configuration
-        // For production, you'd want to store this in the database
-        warn!(
-            "Platform fee percentage updated to {}% (requires environment variable update)",
-            new_percentage
-        );
-
-        Ok(())
     }
 
     pub async fn get_events_pending_payout(&self) -> Result<Vec<serde_json::Value>> {
@@ -508,171 +407,5 @@ impl EventService {
         Ok(pending_events)
     }
 
-    /// Pay the event organizer using the specified payment method
-    pub async fn pay_event_organizer_with_method(
-        &self,
-        platform_secret: &str,
-        organizer_public: &str,
-        total_revenue: f64,
-        platform_fee_percentage: f64,
-        payment_method: PaymentMethod,
-    ) -> Result<String> {
-        // platform fee
-        let organizer_share = total_revenue * (1.0 - platform_fee_percentage / 100.0);
-        
-
-        info!(
-            "💰 Paying event organizer: {} USDC ({}% of {} total) using {:?}",
-            organizer_share,
-            100.0 - platform_fee_percentage,
-            total_revenue,
-            payment_method
-        );
-
-        match payment_method {
-            PaymentMethod::StellarWallet => {
-                // Use Stellar for payment - need to extract transaction_hash from result
-                info!("Paying organizer via Stellar");
-                let payment_result = self
-                    .stellar_service
-                    .send_organizer_payment(platform_secret, organizer_public, organizer_share)
-                    .await?;
-                Ok(payment_result.transaction_hash)
-            }
-
-            PaymentMethod::BankTransfer => {
-                // Implement bank transfer logic
-                info!("Paying organizer via bank transfer");
-                // TODO: Implement bank transfer API
-                Ok(format!("BANK_PAYMENT_{}", chrono::Utc::now().timestamp()))
-            }
-
-            PaymentMethod::Paystack => {
-                // Implement PayStack payment logic
-                info!("Paying organizer via PayStack");
-                // TODO: Implement PayStack API
-                Ok(format!(
-                    "PAYSTACK_PAYMENT_{}",
-                    chrono::Utc::now().timestamp()
-                ))
-            }
-
-            PaymentMethod::Link => {
-                // Implement LINK payment logic
-                info!("Paying organizer via LINK");
-                // TODO: Implement LINK API
-                Ok(format!("LINK_PAYMENT_{}", chrono::Utc::now().timestamp()))
-            }
-        }
-    }
-
-    /// Process a refund using the specified payment method
-    // pub async fn process_refund_with_method(
-    //     &self,
-    //     organizer_secret: &str,
-    //     user_public: &str,
-    //     refund_amount: &str,
-    //     payment_method: PaymentMethod,
-    // ) -> Result<String> {
-    //     info!("💸 Processing refund: {} using {:?}", refund_amount, payment_method);
-
-    //     match payment_method {
-    //         PaymentMethod::StellarWallet => {
-    //             // Use Stellar blockchain for refund
-    //             info!("Processing refund via Stellar blockchain");
-    //             self.stellar_service
-    //                 .send_payment(organizer_secret, user_public, refund_amount)
-    //                 .await
-    //         }
-
-    //         PaymentMethod::BankTransfer => {
-    //             // Implement bank transfer logic
-    //             info!("Processing refund via bank transfer");
-    //             // TODO: Implement bank transfer API
-    //             Ok(format!("BANK_TRANSFER_REFUND_{}", chrono::Utc::now().timestamp()))
-    //         }
-
-    //         PaymentMethod::Paystack => {
-    //             // Implement PayStack refund logic
-    //             info!("Processing refund via PayStack");
-    //             // TODO: Implement PayStack API
-    //             Ok(format!("PAYSTACK_REFUND_{}", chrono::Utc::now().timestamp()))
-    //         }
-
-    //         PaymentMethod::Link => {
-    //             // Implement LINK refund logic
-    //             info!("Processing refund via LINK");
-    //             // TODO: Implement LINK API
-    //             Ok(format!("LINK_REFUND_{}", chrono::Utc::now().timestamp()))
-    //         }
-    //     }
-    // }
-
-    pub fn get_default_payment_method(&self) -> PaymentMethod {
-        // TODO: You could read this from env maybe
-        match std::env::var("DEFAULT_PAYMENT_METHOD")
-            .unwrap_or_else(|_| "stellar".to_string())
-            .as_str()
-        {
-            "bank" => PaymentMethod::BankTransfer,
-            "paystack" => PaymentMethod::Paystack,
-            "link" => PaymentMethod::Link,
-            _ => PaymentMethod::StellarWallet,
-        }
-    }
-
-    // pub async fn pay_event_organizer(
-    //     &self,
-    //     platform_secret: &str,
-    //     organizer_public: &str,
-    //     total_revenue: f64,
-    //     platform_fee_percentage: f64,
-    // ) -> Result<String> {
-    //     let payment_method = self.get_default_payment_method();
-    //     self.pay_event_organizer_with_method(
-    //         platform_secret,
-    //         organizer_public,
-    //         total_revenue,
-    //         platform_fee_percentage,
-    //         payment_method,
-    //     )
-    //     .await
-    // }
-
-    // pub async fn process_refund(
-    //     &self,
-    //     organizer_secret: &str,
-    //     user_public: &str,
-    //     refund_amount: &str,
-    // ) -> Result<String> {
-    //     let payment_method = self.get_default_payment_method();
-    //     self.process_refund_with_method(organizer_secret, user_public, refund_amount, payment_method).await
-    // }
-
-    // pub async fn pay_event_organizer_stellar(
-    //     &self,
-    //     platform_secret: &str,
-    //     organizer_public: &str,
-    //     total_revenue: f64,
-    //     platform_fee_percentage: f64,
-    // ) -> Result<String> {
-    //     self.pay_event_organizer_with_method(
-    //         platform_secret,
-    //         organizer_public,
-    //         total_revenue,
-    //         platform_fee_percentage,
-    //         PaymentMethod::StellarWallet
-    //     ).await
-    // }
-
-    // pub async fn process_refund_stellar(
-    //     &self,
-    //     organizer_secret: &str,
-    //     user_public: &str,
-    //     refund_amount: &str,
-    // ) -> Result<String> {
-    //     self.process_refund_with_method(organizer_secret, user_public, refund_amount, PaymentMethod::StellarWallet).await
-    // }
-
-    // TODO: add the scheduler for processing events payouts
+    // TODO: add to the scheduler for processing events payouts
 }

@@ -11,12 +11,12 @@ pub struct AdminTicketFilters {
     pub purchased_after: Option<DateTime<Utc>>,
     pub purchased_before: Option<DateTime<Utc>>,
     pub transaction_status: Option<String>,
-    pub search: Option<String>, // Search in event title, user email, ticket type name
+    pub search: Option<String>,
     pub is_free: Option<bool>,
-    pub currency: Option<String>, // XLM, USDC, NGN.)
+    pub currency: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
-    pub sort_by: Option<String>, // "created_at", "updated_at", "event_start", "amount"
+    pub sort_by: Option<String>,
     pub sort_order: Option<String>,
 }
 
@@ -24,7 +24,7 @@ pub struct AdminTicketFilters {
 pub struct AdminEventFilters {
     pub status: Option<String>,
     pub category: Option<String>,
-    pub location: Option<String>, //(partial match)
+    pub location: Option<String>, //partial match
     pub start_date: Option<DateTime<Utc>>,
     pub end_date: Option<DateTime<Utc>>,
     pub created_after: Option<DateTime<Utc>>,

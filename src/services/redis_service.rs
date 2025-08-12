@@ -1,9 +1,8 @@
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
-use redis::{aio::ConnectionManager, AsyncCommands, Client, RedisError};
+use redis::{aio::ConnectionManager, AsyncCommands, Client};
 use serde::{Deserialize, Serialize};
 use std::env;
-use tokio::time::Duration;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
@@ -72,8 +71,6 @@ impl RedisService {
         Ok(response)
     }
 
-    // === USER PROFILE CACHING ===
-
     pub async fn cache_user_profile<T>(
         &self,
         user_id: Uuid,
@@ -137,8 +134,6 @@ impl RedisService {
         Ok(())
     }
 
-    // === USER PERMISSIONS CACHING ===
-
     pub async fn cache_user_permissions(
         &self,
         user_id: Uuid,
@@ -173,8 +168,6 @@ impl RedisService {
         }
     }
 
-    // === SESSION MANAGEMENT ===
-
     pub async fn add_user_session(
         &self,
         user_id: Uuid,
@@ -184,7 +177,6 @@ impl RedisService {
         let key = format!("USER_SESSIONS:{}", user_id);
         let mut conn = self.connection.clone();
 
-        // Add JWT ID to user's session set with expiry
         let _: () = conn.sadd(&key, jwt_id).await?;
         let _: () = conn.expire(&key, ttl_seconds as i64).await?;
 
@@ -203,7 +195,6 @@ impl RedisService {
         let session_key = format!("USER_SESSIONS:{}", user_id);
         let mut conn = self.connection.clone();
         
-        // First get all JWT IDs to clean up their metadata
         let jwt_ids: Vec<String> = conn.smembers(&session_key).await.unwrap_or_default();
         
         // Remove all session metadata
@@ -218,8 +209,6 @@ impl RedisService {
         info!("🗑️ All sessions and metadata invalidated for user: {}", user_id);
         Ok(())
     }
-
-    // === ACTIVE TICKETS CACHING ===
 
     pub async fn cache_user_active_tickets<T>(
         &self,
@@ -261,8 +250,6 @@ impl RedisService {
         }
     }
 
-    // === EVENT ANALYTICS CACHING ===
-
     pub async fn cache_event_analytics<T>(
         &self,
         event_id: Uuid,
@@ -299,8 +286,6 @@ impl RedisService {
         }
     }
 
-    // === RATE LIMITING ===
-
     pub async fn check_rate_limit(
         &self,
         key: &str,
@@ -309,7 +294,6 @@ impl RedisService {
     ) -> Result<bool> {
         let mut conn = self.connection.clone();
 
-        // Get current count
         let current: Option<u32> = conn.get(key).await?;
         let count = current.unwrap_or(0);
 
@@ -321,10 +305,8 @@ impl RedisService {
             return Ok(false);
         }
 
-        // Increment counter
         let new_count: u32 = conn.incr(key, 1).await?;
 
-        // Set expiry on first request
         if new_count == 1 {
             let _: () = conn.expire(key, window_seconds as i64).await?;
         }
@@ -342,8 +324,6 @@ impl RedisService {
         let used = current.unwrap_or(0);
         Ok(limit.saturating_sub(used))
     }
-
-    // === GENERAL CACHE OPERATIONS ===
 
     pub async fn set_with_expiry(&self, key: &str, value: &str, ttl_seconds: u64) -> Result<()> {
         let mut conn = self.connection.clone();
@@ -368,8 +348,6 @@ impl RedisService {
         let exists: bool = conn.exists(key).await?;
         Ok(exists)
     }
-
-    // === HEALTH CHECK ===
 
     pub async fn health_check(&self) -> Result<RedisHealth> {
         let start = std::time::Instant::now();
@@ -415,7 +393,6 @@ impl RedisService {
 
         let mut conn = self.connection.clone();
 
-        // Add JWT ID to user's session set
         let _: () = conn.sadd(&session_key, jwt_id).await?;
         let _: () = conn.expire(&session_key, ttl_seconds as i64).await?;
 
@@ -432,17 +409,14 @@ impl RedisService {
         Ok(())
     }
 
-    /// Get all active sessions for a user with metadata
     pub async fn get_user_active_sessions(&self, user_id: Uuid) -> Result<Vec<SessionMetadata>> {
         let session_key = format!("USER_SESSIONS:{}", user_id);
         let mut conn = self.connection.clone();
 
-        // Get all JWT IDs for this user
         let jwt_ids: Vec<String> = conn.smembers(&session_key).await?;
 
         let mut sessions = Vec::new();
 
-        // Fetch metadata for each session
         for jwt_id in jwt_ids {
             let metadata_key = format!("SESSION_INFO:{}", jwt_id);
             if let Ok(Some(metadata_json)) = conn.get::<_, Option<String>>(&metadata_key).await {
@@ -460,17 +434,14 @@ impl RedisService {
         Ok(sessions)
     }
 
-    /// Update last activity time for a session
     pub async fn update_session_activity(&self, jwt_id: &str) -> Result<()> {
         let metadata_key = format!("SESSION_INFO:{}", jwt_id);
         let mut conn = self.connection.clone();
 
-        // Get existing metadata
         if let Ok(Some(metadata_json)) = conn.get::<_, Option<String>>(&metadata_key).await {
             if let Ok(mut session_metadata) =
                 serde_json::from_str::<SessionMetadata>(&metadata_json)
             {
-                // Update last activity
                 session_metadata.last_activity = chrono::Utc::now();
 
                 // Save back to Redis (keep original TTL)
@@ -482,7 +453,6 @@ impl RedisService {
         Ok(())
     }
 
-    /// Remove session and its metadata
     pub async fn remove_user_session_with_metadata(
         &self,
         user_id: Uuid,
@@ -493,10 +463,8 @@ impl RedisService {
 
         let mut conn = self.connection.clone();
 
-        // Remove from session set
         let _: () = conn.srem(&session_key, jwt_id).await?;
 
-        // Remove metadata
         let _: () = conn.del(&metadata_key).await?;
 
         debug!(
@@ -511,11 +479,9 @@ impl RedisService {
         let session_key = format!("USER_SESSIONS:{}", user_id);
         let mut conn = self.connection.clone();
 
-        // Check if session exists
         let exists: bool = conn.sismember(&session_key, jwt_id).await?;
 
         if exists {
-            // Remove the specific session
             self.remove_user_session_with_metadata(user_id, jwt_id)
                 .await?;
             Ok(true)
@@ -530,7 +496,7 @@ impl RedisService {
     {
         if let Err(e) = self.cache_user_profile(user_id, profile, ttl_seconds).await {
             warn!("Failed to cache user profile for {}: {}", user_id, e);
-            // Don't propagate error - caching failures shouldn't break application flow
+            // Don't propagate error; caching failures shouldn't break application flow
         }
     }
 

@@ -18,6 +18,5 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             .configure(transaction::configure)
             .configure(user::configure)
             .configure(admin::configure)
-            // .configure(admin_filters::configure)
     );
 }

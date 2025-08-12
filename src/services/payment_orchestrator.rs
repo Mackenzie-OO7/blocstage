@@ -6,7 +6,6 @@ use crate::services::stellar::{StellarService, SponsoredPaymentResult};
 use anyhow::{anyhow, Result};
 use log::{error, info, warn};
 use std::env;
-use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct PaymentCapability {
@@ -48,7 +47,6 @@ pub struct PaymentOrchestrator {
 }
 
 impl PaymentOrchestrator {
-    /// Create new PaymentOrchestrator with dependency injection
     pub fn new(
         stellar: StellarService,
         sponsor_manager: SponsorManager,
@@ -65,7 +63,6 @@ impl PaymentOrchestrator {
         })
     }
 
-    /// Comprehensive payment capability validation
     pub async fn validate_payment_capability(
         &self,
         user: &User,
@@ -142,7 +139,6 @@ impl PaymentOrchestrator {
             }
         }
 
-        // Overall payment capability
         capability.can_make_payment = capability.has_wallet 
             && capability.has_usdc_trustline 
             && capability.has_sufficient_balance 
@@ -157,7 +153,6 @@ impl PaymentOrchestrator {
         Ok(capability)
     }
 
-    /// Generate comprehensive payment preview
     pub async fn get_payment_preview(
         &self,
         user: &User,
@@ -165,7 +160,6 @@ impl PaymentOrchestrator {
     ) -> Result<PaymentPreview> {
         info!("📋 Generating payment preview for user {} (ticket: {} USDC)", user.id, ticket_price);
 
-        // Input validation
         if ticket_price <= 0.0 {
             return Err(anyhow!("Ticket price must be greater than zero"));
         }
@@ -174,13 +168,10 @@ impl PaymentOrchestrator {
             return Err(anyhow!("Ticket price exceeds maximum limit"));
         }
 
-        // Calculate fee breakdown
         let fee_calculation = self.fee_calculator.calculate_sponsorship_fee(ticket_price).await?;
         
-        // Validate payment capability
         let payment_capability = self.validate_payment_capability(user, fee_calculation.total_user_pays).await?;
 
-        // Generate breakdown text
         let breakdown_text = format!(
             "Ticket: ${:.2} + Sponsorship Fee: ${:.2} = Total: ${:.2}",
             fee_calculation.ticket_price,
@@ -198,7 +189,6 @@ impl PaymentOrchestrator {
         })
     }
 
-    /// Execute sponsored payment with full orchestration
     pub async fn execute_sponsored_payment(
         &self,
         user: &User,
@@ -208,10 +198,8 @@ impl PaymentOrchestrator {
         info!("💳 Orchestrating sponsored payment: {} USDC for user {} (transaction: {})", 
                fee_calculation.total_user_pays, user.id, transaction.id);
 
-        // Step 1: Pre-payment validation
         self.pre_payment_validation(user, fee_calculation).await?;
 
-        // Step 2: Validate payment capability
         let capability = self.validate_payment_capability(user, fee_calculation.total_user_pays).await?;
         if !capability.can_make_payment {
             let error_msg = capability.errors.join("; ");
@@ -219,32 +207,24 @@ impl PaymentOrchestrator {
             return Err(anyhow!("Payment validation failed: {}", error_msg));
         }
 
-        // Step 3: Get platform wallet and sponsor
         let platform_wallet = self.get_platform_wallet()?;
         let sponsor_info = self.sponsor_manager.get_available_sponsor().await
             .map_err(|e| anyhow!("No sponsor accounts available: {}", e))?;
 
         info!("Using sponsor account: {}", sponsor_info.account_name);
 
-        // ❌ REMOVE: Step 4: Decrypt user's secret key securely
-        // let user_secret_key = self.decrypt_user_secret_key(user)?;
-
-        // ✅ NEW: Step 4: Get encrypted keys directly
         let user_secret_key_encrypted = user
             .stellar_secret_key_encrypted
             .as_ref()
             .ok_or_else(|| anyhow!("User has no encrypted secret key"))?;
 
-        // ✅ ASSUME: sponsor_info will have encrypted_secret_key field 
-        // (will be added in Day 3-4 when we migrate sponsor keys to database)
-        let sponsor_secret_encrypted = &sponsor_info.secret_key; // For now, this might be plain text
+        let sponsor_secret_encrypted = &sponsor_info.secret_key;
 
-        // ✅ UPDATED: Step 5: Execute payment with encrypted keys
         let payment_result = self.stellar.send_payment(
-            user_secret_key_encrypted,     // ✅ Pass encrypted user key
+            user_secret_key_encrypted,
             &platform_wallet,
             &fee_calculation.total_user_pays.to_string(),
-            sponsor_secret_encrypted,      // ✅ Pass encrypted sponsor key
+            sponsor_secret_encrypted,
         ).await.map_err(|e| {
             error!("Payment execution failed for user {}: {}", user.id, e);
             anyhow!("Payment execution failed: {}", self.format_user_friendly_error(&e))
@@ -261,13 +241,11 @@ impl PaymentOrchestrator {
         Ok(payment_result)
     }
 
-    /// Get platform payment wallet from environment
     pub fn get_platform_wallet(&self) -> Result<String> {
         env::var("PLATFORM_PAYMENT_PUBLIC_KEY")
             .map_err(|_| anyhow!("Platform payment wallet not configured. Please set PLATFORM_PAYMENT_PUBLIC_KEY"))
     }
 
-    /// Format user-friendly error messages
     pub fn format_user_friendly_error(&self, error: &anyhow::Error) -> String {
         let error_str = error.to_string().to_lowercase();
 
@@ -290,7 +268,6 @@ impl PaymentOrchestrator {
         }
     }
 
-    /// Categorize payment errors for better handling
     pub fn categorize_payment_error(&self, error: &anyhow::Error) -> PaymentErrorCategory {
         let error_msg = error.to_string().to_lowercase();
         
@@ -311,13 +288,12 @@ impl PaymentOrchestrator {
         }
     }
 
-    /// Auto-create USDC trustline if needed
+   // check and create USDC trustline if needed
     pub async fn ensure_usdc_trustline(&self, user: &User) -> Result<Option<String>> {
         self.validate_user_wallet_config(user)?;
         
         let public_key = user.stellar_public_key.as_ref().unwrap();
         
-        // Check if trustline already exists
         if self.stellar.has_usdc_trustline(public_key).await? {
             info!("User {} already has USDC trustline", user.id);
             return Ok(None);
@@ -325,10 +301,8 @@ impl PaymentOrchestrator {
 
         info!("🤝 Auto-creating USDC trustline for user {}", user.id);
 
-        // Decrypt user's secret key
         let encrypted_secret = user.stellar_secret_key_encrypted.as_ref().unwrap();
         
-        // Create trustline (self-funded for now)
         let tx_hash = self.stellar.create_usdc_trustline(encrypted_secret).await?;
         
         info!("✅ USDC trustline created for user {}: {}", user.id, tx_hash);
@@ -336,8 +310,6 @@ impl PaymentOrchestrator {
     }
 
     // Private helper methods
-
-    /// Pre-payment validation to catch issues early
     async fn pre_payment_validation(
         &self,
         user: &User,
@@ -364,7 +336,6 @@ impl PaymentOrchestrator {
         Ok(())
     }
 
-    /// Validate user has a properly configured Stellar wallet
     fn validate_user_wallet_config(&self, user: &User) -> Result<()> {
         if user.stellar_public_key.is_none() {
             return Err(anyhow!("User has no Stellar public key"));
@@ -380,20 +351,5 @@ impl PaymentOrchestrator {
         }
 
         Ok(())
-    }
-
-    /// Securely decrypt user's secret key
-    fn decrypt_user_secret_key(&self, user: &User) -> Result<String> {
-        let encrypted_secret = user
-            .stellar_secret_key_encrypted
-            .as_ref()
-            .ok_or_else(|| anyhow!("User has no encrypted secret key"))?;
-
-        self.crypto_service
-            .decrypt_secret_key(encrypted_secret)
-            .map_err(|e| {
-                error!("Failed to decrypt secret key for user {}: {}", user.id, e);
-                anyhow!("Failed to decrypt wallet credentials")
-            })
     }
 }

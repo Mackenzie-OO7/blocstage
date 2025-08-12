@@ -2,7 +2,10 @@ use crate::controllers::admin_filters::{
     AdminEventFilters, AdminEventView, PageInfo, PaginatedEventsResponse,
 };
 use crate::middleware::auth::AuthenticatedUser;
-use crate::models::event::{CreateEventRequest, Event, SearchEventsRequest, UpdateEventRequest, EventSession, CreateEventSessionRequest, UpdateEventSessionRequest, EventWithSessions};
+use crate::models::event::{
+    CreateEventRequest, CreateEventSessionRequest, Event, EventSession,
+    SearchEventsRequest, UpdateEventRequest, UpdateEventSessionRequest,
+};
 use crate::models::event_organizer::{
     AddOrganizerRequest, EventOrganizer, UpdateOrganizerPermissionsRequest,
 };
@@ -13,11 +16,11 @@ use actix_web::{web, HttpResponse, Responder};
 use anyhow::Result;
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
+use futures_util::stream::StreamExt as _;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
-use futures_util::stream::StreamExt as _;
-use tokio::io::AsyncWriteExt;
 use sqlx::{PgPool, Row};
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
@@ -31,33 +34,7 @@ pub struct PaginationParams {
     offset: Option<i64>,
 }
 
-// EVENT CREATION AND MANAGEMENT
-
-// pub async fn create_event(
-//     pool: web::Data<PgPool>,
-//     event_data: web::Json<CreateEventRequest>,
-//     user: AuthenticatedUser,
-// ) -> impl Responder {
-//     let _verified_user = match crate::middleware::auth::require_verified_user(&pool, user.id).await {
-//         Ok(user) => user,
-//         Err(response) => return response,
-//     };
-
-//     match Event::create(&pool, user.id, event_data.into_inner()).await {
-//         Ok(event) => {
-//             info!("Event created: {} by verified user {}", event.id, user.id);
-//             HttpResponse::Created().json(event)
-//         },
-//         Err(e) => {
-//             error!("Failed to create event: {}", e);
-//             HttpResponse::InternalServerError().json(ErrorResponse {
-//                 error: "Failed to create event. Please try again.".to_string(),
-//             })
-//         },
-//     }
-// }
-
-// debug
+// TODO: remove debug mode
 pub async fn create_event(
     pool: web::Data<PgPool>,
     event_data: web::Json<CreateEventRequest>,
@@ -66,7 +43,6 @@ pub async fn create_event(
     info!("🎪 Event creation attempt by user: {}", user.id);
     info!("📝 Event data: {:?}", event_data);
 
-    // Check if user is verified
     let _verified_user = match crate::middleware::auth::require_verified_user(&pool, user.id).await
     {
         Ok(user) => {
@@ -79,7 +55,6 @@ pub async fn create_event(
         }
     };
 
-    // Attempt to create event
     match Event::create(&pool, user.id, event_data.into_inner()).await {
         Ok(event_with_sessions) => {
             info!(
@@ -91,7 +66,6 @@ pub async fn create_event(
         Err(e) => {
             error!("❌ Failed to create event for user {}: {}", user.id, e);
 
-            // More specific error messages
             let error_message = if e.to_string().contains("duplicate key") {
                 "An event with this information already exists."
             } else if e.to_string().contains("null value") {
@@ -430,7 +404,7 @@ pub async fn add_event_organizer(
 
 pub async fn remove_event_organizer(
     pool: web::Data<PgPool>,
-    path: web::Path<(Uuid, Uuid)>, // (event_id, user_id)
+    path: web::Path<(Uuid, Uuid)>, // event_id, user_id
     user: AuthenticatedUser,
 ) -> impl Responder {
     let (event_id, organizer_user_id) = path.into_inner();
@@ -562,19 +536,16 @@ pub async fn get_event_sessions(
     pool: web::Data<PgPool>,
     event_id: web::Path<Uuid>,
 ) -> impl Responder {
-    // Verify event exists
     match Event::find_by_id(&pool, *event_id).await {
-        Ok(Some(_)) => {
-            match EventSession::find_by_event_id(&pool, *event_id).await {
-                Ok(sessions) => HttpResponse::Ok().json(sessions),
-                Err(e) => {
-                    error!("Failed to fetch event sessions: {}", e);
-                    HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to fetch sessions".to_string(),
-                    })
-                }
+        Ok(Some(_)) => match EventSession::find_by_event_id(&pool, *event_id).await {
+            Ok(sessions) => HttpResponse::Ok().json(sessions),
+            Err(e) => {
+                error!("Failed to fetch event sessions: {}", e);
+                HttpResponse::InternalServerError().json(ErrorResponse {
+                    error: "Failed to fetch sessions".to_string(),
+                })
             }
-        }
+        },
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
             error: "Event not found".to_string(),
         }),
@@ -593,7 +564,6 @@ pub async fn create_event_session(
     session_data: web::Json<CreateEventSessionRequest>,
     user: AuthenticatedUser,
 ) -> impl Responder {
-    // Check permission to manage event
     let _event = match crate::middleware::auth::check_event_permission(
         &pool,
         user.id,
@@ -616,8 +586,10 @@ pub async fn create_event_session(
         }
         Err(e) => {
             error!("Failed to create session: {}", e);
-            
-            let error_message = if e.to_string().contains("Session") && e.to_string().contains("must be within event timeframe") {
+
+            let error_message = if e.to_string().contains("Session")
+                && e.to_string().contains("must be within event timeframe")
+            {
                 "Session times must be within the event timeframe"
             } else if e.to_string().contains("duration must be at least") {
                 "Session duration must be at least 5 minutes"
@@ -642,7 +614,6 @@ pub async fn update_event_session(
 ) -> impl Responder {
     let (event_id, session_id) = path.into_inner();
 
-    // Check permission to manage event
     let _event = match crate::middleware::auth::check_event_permission(
         &pool,
         user.id,
@@ -655,7 +626,6 @@ pub async fn update_event_session(
         Err(response) => return response,
     };
 
-    // Find the session
     let session = match EventSession::find_by_id(&pool, session_id).await {
         Ok(Some(session)) => {
             if session.event_id != event_id {
@@ -702,7 +672,6 @@ pub async fn delete_event_session(
 ) -> impl Responder {
     let (event_id, session_id) = path.into_inner();
 
-    // Check permission to manage event
     let _event = match crate::middleware::auth::check_event_permission(
         &pool,
         user.id,
@@ -715,7 +684,6 @@ pub async fn delete_event_session(
         Err(response) => return response,
     };
 
-    // Find the session
     let session = match EventSession::find_by_id(&pool, session_id).await {
         Ok(Some(session)) => {
             if session.event_id != event_id {
@@ -763,7 +731,6 @@ pub async fn reorder_event_sessions(
     reorder_data: web::Json<Vec<(Uuid, i32)>>,
     user: AuthenticatedUser,
 ) -> impl Responder {
-    // Check permission to manage event
     let _event = match crate::middleware::auth::check_event_permission(
         &pool,
         user.id,
@@ -795,7 +762,6 @@ pub async fn reorder_event_sessions(
     }
 }
 
-
 pub async fn upload_session_file(
     pool: web::Data<PgPool>,
     path: web::Path<(Uuid, Uuid)>,
@@ -804,7 +770,6 @@ pub async fn upload_session_file(
 ) -> impl Responder {
     let (event_id, session_id) = path.into_inner();
 
-    // Check permission to manage event
     let _event = match crate::middleware::auth::check_event_permission(
         &pool,
         user.id,
@@ -817,7 +782,6 @@ pub async fn upload_session_file(
         Err(response) => return response,
     };
 
-    // Find the session
     let session = match EventSession::find_by_id(&pool, session_id).await {
         Ok(Some(session)) => {
             if session.event_id != event_id {
@@ -840,7 +804,6 @@ pub async fn upload_session_file(
         }
     };
 
-    // Process file upload
     while let Some(item) = payload.next().await {
         let mut field = match item {
             Ok(field) => field,
@@ -852,7 +815,6 @@ pub async fn upload_session_file(
             }
         };
 
-        // Extract filename and field info FIRST (to drop immutable borrow)
         let (field_name, filename) = {
             if let Some(content_disposition) = field.content_disposition() {
                 let field_name = content_disposition.get_name().map(|s| s.to_string());
@@ -864,12 +826,12 @@ pub async fn upload_session_file(
             } else {
                 (None, "session_file".to_string())
             }
-        }; // <-- Immutable borrow ends here
+        };
 
-        // Now we can use mutable borrow
         if field_name.as_deref() == Some("file") {
-            // Validate file type (basic security)
-            let allowed_extensions = vec!["pdf", "doc", "docx", "ppt", "pptx", "txt", "jpg", "jpeg", "png"];
+            let allowed_extensions = vec![
+                "pdf", "doc", "docx", "ppt", "pptx", "txt", "jpg", "jpeg", "png",
+            ];
             let file_extension = std::path::Path::new(&filename)
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -882,7 +844,6 @@ pub async fn upload_session_file(
                 });
             }
 
-            // Generate unique filename
             let unique_filename = format!(
                 "{}_{}_{}",
                 session_id,
@@ -890,10 +851,8 @@ pub async fn upload_session_file(
                 filename
             );
 
-            // Save file (now we can use mutable borrow)
             match save_session_file(&mut field, &event_id, &unique_filename).await {
                 Ok(file_url) => {
-                    // Update session with file URL
                     match session.set_file_url(&pool, &file_url).await {
                         Ok(updated_session) => {
                             info!(
@@ -929,7 +888,6 @@ pub async fn upload_session_file(
     })
 }
 
-// Helper function for file upload
 async fn save_session_file(
     field: &mut actix_multipart::Field,
     event_id: &Uuid,
@@ -939,12 +897,10 @@ async fn save_session_file(
     let file_path = format!("sessions/{}/{}", event_id, filename);
     let full_path = std::path::Path::new(&storage_dir).join(&file_path);
 
-    // Create directory if it doesn't exist
     if let Some(parent) = full_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    // Save file
     let mut file = tokio::fs::File::create(&full_path).await?;
     let mut total_size = 0;
     const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
@@ -952,21 +908,19 @@ async fn save_session_file(
     while let Some(chunk) = field.next().await {
         let data = chunk?;
         total_size += data.len();
-        
+
         if total_size > MAX_FILE_SIZE {
             return Err("File size exceeds 10MB limit".into());
         }
-        
+
         file.write_all(&data).await?;
     }
 
-    // Return URL
     let app_url = std::env::var("APP_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
     Ok(format!("{}/storage/{}", app_url, file_path))
 }
 
 // ADMIN ENDPOINTS
-
 pub async fn admin_cancel_any_event(
     pool: web::Data<PgPool>,
     event_id: web::Path<Uuid>,
@@ -1048,7 +1002,6 @@ pub async fn admin_get_event_details(
             }
         };
 
-    // Get event analytics
     let analytics = match get_event_stats(&pool, *event_id).await {
         Ok(stats) => stats,
         Err(e) => {
@@ -1399,7 +1352,6 @@ pub async fn pay_organizer(
         });
     }
 
-    // 2. Calculate total revenue from the event
     let revenue_result = match sqlx::query!(
         r#"
         SELECT 
@@ -1443,7 +1395,6 @@ pub async fn pay_organizer(
         });
     }
 
-    // 3. Get event and organizer info
     let event = match Event::find_by_id(&pool, *event_id).await {
         Ok(Some(event)) => event,
         Ok(None) => {
@@ -1483,7 +1434,6 @@ pub async fn pay_organizer(
         }
     };
 
-    // 4. Verify organizer has USDC trustline
     let stellar = match StellarService::new() {
         Ok(service) => service,
         Err(e) => {
@@ -1504,7 +1454,6 @@ pub async fn pay_organizer(
         });
     }
 
-    // 5. Get platform configuration
     let platform_secret = match std::env::var("PLATFORM_PAYMENT_SECRET") {
         Ok(secret) => secret,
         Err(_) => {
@@ -1520,7 +1469,7 @@ pub async fn pay_organizer(
         .parse::<f64>()
         .unwrap_or(5.0);
 
-    // ✅ Call send_organizer_payment (method handles both encrypted/plain text internally)
+    // method handles both encrypted/plain text internally
     let payout_result = match stellar
         .send_organizer_payment(&platform_secret, &organizer_wallet, total_revenue_usdc)
         .await
@@ -1539,10 +1488,8 @@ pub async fn pay_organizer(
         }
     };
 
-    // Extract the transaction hash for database storage
     let tx_hash = &payout_result.transaction_hash;
 
-    // 7. Record payout in database
     let organizer_payout = total_revenue_usdc * (1.0 - platform_fee_percentage / 100.0);
     let record_result = sqlx::query!(
         r#"
@@ -1560,13 +1507,12 @@ pub async fn pay_organizer(
 
     if let Err(e) = record_result {
         error!("Failed to record payout: {}", e);
-        // Payment succeeded but recording failed - this is critical
+        // Payment succeeded but recording failed(this is critical)
         return HttpResponse::InternalServerError().json(ErrorResponse {
             error: "Payment processed but failed to record. Contact support.".to_string(),
         });
     }
 
-    // 8. Success response
     info!(
         "Admin {} triggered manual payout for event {}: {} USDC → {} USDC to organizer (tx: {})",
         user.id, event_id, total_revenue_usdc, organizer_payout, tx_hash
@@ -1586,7 +1532,6 @@ pub async fn pay_organizer(
     }))
 }
 
-// ROUTE CONFIGURATION
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/events")
@@ -1614,13 +1559,28 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/{event_id}/organizers/{user_id}/permissions",
                 web::put().to(update_organizer_permissions),
             )
-            .route("/{event_id}/with-sessions", web::get().to(get_event_with_sessions))
+            .route(
+                "/{event_id}/with-sessions",
+                web::get().to(get_event_with_sessions),
+            )
             .route("/{event_id}/sessions", web::get().to(get_event_sessions))
             .route("/{event_id}/sessions", web::post().to(create_event_session))
-            .route("/{event_id}/sessions/reorder", web::put().to(reorder_event_sessions))
-            .route("/{event_id}/sessions/{session_id}", web::put().to(update_event_session))
-            .route("/{event_id}/sessions/{session_id}", web::delete().to(delete_event_session))
-            .route("/{event_id}/sessions/{session_id}/upload", web::post().to(upload_session_file)),
+            .route(
+                "/{event_id}/sessions/reorder",
+                web::put().to(reorder_event_sessions),
+            )
+            .route(
+                "/{event_id}/sessions/{session_id}",
+                web::put().to(update_event_session),
+            )
+            .route(
+                "/{event_id}/sessions/{session_id}",
+                web::delete().to(delete_event_session),
+            )
+            .route(
+                "/{event_id}/sessions/{session_id}/upload",
+                web::post().to(upload_session_file),
+            ),
     )
     .service(
         web::scope("/admin/events")

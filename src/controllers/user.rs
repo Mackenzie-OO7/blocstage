@@ -1,10 +1,8 @@
 use crate::models::user::User;
-use crate::services::auth::CachedUserProfile;
 use crate::services::stellar::StellarService;
 use crate::services::RedisService;
 use crate::{middleware::auth::AuthenticatedUser};
 use actix_web::{web, HttpResponse, Responder};
-use anyhow::Result;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
@@ -253,7 +251,7 @@ pub async fn get_wallet_info(pool: web::Data<PgPool>, user: AuthenticatedUser) -
                 }
             };
 
-            let xlm_balance = match stellar.get_xlm_balance(&public_key).await {
+            let _xlm_balance = match stellar.get_xlm_balance(&public_key).await {
                 Ok(balance) => Some(balance),
                 Err(e) => {
                     error!("Failed to fetch XLM balance: {}", e);
@@ -419,7 +417,6 @@ pub async fn create_usdc_trustline(
                 }
             };
 
-            // Direct call - no wrapper needed!
             match stellar
                 .create_asset_trustline(
                     &user_profile.stellar_secret_key_encrypted.unwrap(),

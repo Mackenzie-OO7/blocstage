@@ -28,12 +28,10 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
-/// Get sponsor account statistics
 pub async fn get_sponsor_statistics(
     pool: web::Data<sqlx::PgPool>,
     user: AuthenticatedUser,
 ) -> impl Responder {
-    // Add admin check
     let _admin_user = match crate::middleware::auth::require_admin_user(&pool, user.id).await {
         Ok(user) => user,
         Err(response) => return response,
@@ -65,7 +63,6 @@ pub async fn get_sponsor_statistics(
     }
 }
 
-/// Refresh all sponsor account balances
 pub async fn refresh_sponsor_balances(
     pool: web::Data<sqlx::PgPool>,
     user: AuthenticatedUser,
@@ -84,7 +81,7 @@ pub async fn refresh_sponsor_balances(
         }
     };
 
-    match sponsor_manager.refresh_all_balances().await {
+    match sponsor_manager.update_all_balances().await {
         Ok(_) => {
             info!("Manual sponsor balance refresh completed");
             HttpResponse::Ok().json(serde_json::json!({
@@ -98,7 +95,6 @@ pub async fn refresh_sponsor_balances(
     }
 }
 
-/// Get platform revenue summary
 pub async fn get_revenue_summary(
     pool: web::Data<sqlx::PgPool>,
     user: AuthenticatedUser,
@@ -109,10 +105,8 @@ pub async fn get_revenue_summary(
         Err(response) => return response,
     };
 
-    // Fix: EventService::new() returns EventService, not Result
     let event_service = EventService::new(pool.get_ref().clone());
 
-    // Parse date range from query parameters
     let start_date = query
         .get("start_date")
         .and_then(|d| d.as_str())
@@ -138,7 +132,6 @@ pub async fn get_revenue_summary(
     }
 }
 
-/// Update sponsorship fee percentage
 pub async fn update_sponsorship_fee(
     pool: web::Data<sqlx::PgPool>,
     user: AuthenticatedUser,
@@ -180,7 +173,6 @@ pub async fn update_sponsorship_fee(
     }
 }
 
-/// Get pending event payouts
 pub async fn get_pending_payouts(
     pool: web::Data<sqlx::PgPool>,
     user: AuthenticatedUser,
@@ -190,7 +182,6 @@ pub async fn get_pending_payouts(
         Err(response) => return response,
     };
 
-    // Fix: EventService::new() returns EventService, not Result
     let event_service = EventService::new(pool.get_ref().clone());
 
     match event_service.get_events_pending_payout().await {
@@ -204,7 +195,6 @@ pub async fn get_pending_payouts(
     }
 }
 
-/// Add a new sponsor account
 pub async fn add_sponsor_account(
     pool: web::Data<PgPool>,
     req: web::Json<CreateSponsorRequest>,
@@ -248,7 +238,6 @@ pub async fn add_sponsor_account(
     }
 }
 
-/// Update/replace an existing sponsor account
 pub async fn update_sponsor_account(
     pool: web::Data<PgPool>,
     req: web::Json<UpdateSponsorRequest>,
@@ -292,7 +281,6 @@ pub async fn update_sponsor_account(
     }
 }
 
-/// Deactivate a sponsor account
 pub async fn deactivate_sponsor(
     pool: web::Data<PgPool>,
     path: web::Path<Uuid>,
@@ -336,7 +324,6 @@ pub async fn deactivate_sponsor(
     }
 }
 
-/// Reactivate a sponsor account
 pub async fn reactivate_sponsor(
     pool: web::Data<PgPool>,
     path: web::Path<Uuid>,
@@ -380,7 +367,6 @@ pub async fn reactivate_sponsor(
     }
 }
 
-/// List all sponsor accounts with their status
 pub async fn list_sponsors(
     pool: web::Data<PgPool>,
     user: AuthenticatedUser,
@@ -414,7 +400,6 @@ pub async fn list_sponsors(
     }
 }
 
-/// Get a specific sponsor account by ID
 pub async fn get_sponsor_by_id(
     pool: web::Data<PgPool>,
     path: web::Path<Uuid>,
@@ -449,7 +434,6 @@ pub async fn get_sponsor_by_id(
     }
 }
 
-/// Process all pending event payouts
 pub async fn process_event_payouts(
     pool: web::Data<sqlx::PgPool>,
     user: AuthenticatedUser,
@@ -459,7 +443,6 @@ pub async fn process_event_payouts(
         Err(response) => return response,
     };
 
-    // Fix: EventService::new() returns EventService, not Result
     let event_service = EventService::new(pool.get_ref().clone());
 
     match event_service.process_event_payments().await {
@@ -477,7 +460,6 @@ pub async fn process_event_payouts(
     }
 }
 
-/// Check USDC issuer status
 pub async fn check_usdc_issuer_status(
     _pool: web::Data<sqlx::PgPool>,
     user: AuthenticatedUser,
@@ -487,7 +469,6 @@ pub async fn check_usdc_issuer_status(
         Err(response) => return response,
     };
 
-    // This would implement a health check for the USDC issuer
     HttpResponse::Ok().json(serde_json::json!({
         "usdc_issuer_status": "operational",
         "last_checked": chrono::Utc::now(),
@@ -496,11 +477,9 @@ pub async fn check_usdc_issuer_status(
     }))
 }
 
-// Simplified route configuration - remove missing functions
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/admin")
-            // Platform management
             .route("/platform/revenue", web::get().to(get_revenue_summary))
             
             // Sponsor account management  

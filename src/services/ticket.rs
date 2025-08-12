@@ -1,4 +1,3 @@
-// everything tickets: purchase, verification, transfers
 // TODO: finalize on AWS or Digital Ocean
 use crate::models::{
     event::Event, ticket::Ticket, ticket_type::TicketType, transaction::Transaction, user::User,
@@ -10,18 +9,17 @@ use crate::services::payment_orchestrator::PaymentOrchestrator;
 use anyhow::{anyhow, Result};
 use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_s3::config::Region;
-use aws_sdk_s3::operation::put_object::PutObjectOutput;
 use aws_sdk_s3::Client as S3Client;
-use base64::{engine::general_purpose, Engine as _};
-use bigdecimal::{BigDecimal, Signed, Zero};
+// use base64::{engine::general_purpose, Engine as _};
+use bigdecimal::{BigDecimal};
 use chrono::{DateTime, Utc};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use log::{error, info, warn};
 #[allow(unused_imports)]
 use printpdf::{Mm, PdfDocument, Point, Rgb};
-use qrcode::render::svg;
-use qrcode::QrCode;
+// use qrcode::render::svg;
+// use qrcode::QrCode;
 use serde::Serialize;
 use sqlx::{PgPool, Postgres, Transaction as SqlxTransaction};
 use std::env;
@@ -54,6 +52,30 @@ pub struct TicketStatusResponse {
 }
 
 impl TicketService {
+    // Helper functions to reduce repetitive find-and-unwrap patterns
+    async fn get_ticket(&self, ticket_id: Uuid) -> Result<Ticket> {
+        Ticket::find_by_id(&self.pool, ticket_id)
+            .await?
+            .ok_or_else(|| anyhow!("Ticket not found"))
+    }
+
+    async fn get_ticket_type(&self, ticket_type_id: Uuid) -> Result<TicketType> {
+        TicketType::find_by_id(&self.pool, ticket_type_id)
+            .await?
+            .ok_or_else(|| anyhow!("Ticket type not found"))
+    }
+
+    async fn get_event(&self, event_id: Uuid) -> Result<Event> {
+        Event::find_by_id(&self.pool, event_id)
+            .await?
+            .ok_or_else(|| anyhow!("Event not found"))
+    }
+
+    async fn get_user(&self, user_id: Uuid) -> Result<User> {
+        User::find_by_id(&self.pool, user_id)
+            .await?
+            .ok_or_else(|| anyhow!("User not found"))
+    }
     pub async fn new(pool: PgPool) -> Result<Self> {
         let stellar = StellarService::new()?;
         let sponsor_manager = SponsorManager::new(pool.clone())?;
@@ -146,9 +168,7 @@ impl TicketService {
         ticket_type_id: Uuid,
         user_id: Uuid,
     ) -> Result<(TicketType, Event, User)> {
-        let ticket_type = TicketType::find_by_id(&self.pool, ticket_type_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket type not found"))?;
+        let ticket_type = self.get_ticket_type(ticket_type_id).await?;
 
         if !ticket_type.is_free {
             return Err(anyhow!("This ticket type is not free. Use the purchase endpoint instead."));
@@ -164,9 +184,7 @@ impl TicketService {
             }
         }
 
-        let event = Event::find_by_id(&self.pool, ticket_type.event_id)
-            .await?
-            .ok_or_else(|| anyhow!("Event not found"))?;
+        let event = self.get_event(ticket_type.event_id).await?;
 
         if !event.can_sell_tickets() {
             let effective_status = event.get_effective_status();
@@ -193,9 +211,7 @@ impl TicketService {
             }
         }
 
-        let user = User::find_by_id(&self.pool, user_id)
-            .await?
-            .ok_or_else(|| anyhow!("User not found"))?;
+        let user = self.get_user(user_id).await?;
 
         if let Some(remaining) = ticket_type.remaining {
             if remaining <= 100 {
@@ -275,9 +291,7 @@ impl TicketService {
         ticket_type_id: Uuid,
         user_id: Uuid,
     ) -> Result<(TicketType, Event, User)> {
-        let ticket_type = TicketType::find_by_id(&self.pool, ticket_type_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket type not found"))?;
+        let ticket_type = self.get_ticket_type(ticket_type_id).await?;
 
         if ticket_type.is_free {
             return Err(anyhow!("This ticket type is free. Use the claim endpoint instead."));
@@ -298,9 +312,7 @@ impl TicketService {
             }
         }
 
-        let event = Event::find_by_id(&self.pool, ticket_type.event_id)
-            .await?
-            .ok_or_else(|| anyhow!("Event not found"))?;
+        let event = self.get_event(ticket_type.event_id).await?;
 
         if !event.can_sell_tickets() {
             let effective_status = event.get_effective_status();
@@ -327,9 +339,7 @@ impl TicketService {
             }
         }
 
-        let user = User::find_by_id(&self.pool, user_id)
-            .await?
-            .ok_or_else(|| anyhow!("User not found"))?;
+        let user = self.get_user(user_id).await?;
 
         if user.stellar_public_key.is_none() || user.stellar_secret_key_encrypted.is_none() {
             return Err(anyhow!(
@@ -340,10 +350,9 @@ impl TicketService {
         Ok((ticket_type, event, user))
     }
 
+    // for real-time validation
     pub async fn verify_ticket_with_temporal_check(&self, ticket_id: Uuid) -> Result<bool> {
-        let ticket = Ticket::find_by_id(&self.pool, ticket_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket not found"))?;
+        let ticket = self.get_ticket(ticket_id).await?;
 
         if ticket.status != "valid" {
             info!(
@@ -353,13 +362,9 @@ impl TicketService {
             return Ok(false);
         }
 
-        let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket type not found"))?;
+        let ticket_type = self.get_ticket_type(ticket.ticket_type_id).await?;
 
-        let event = Event::find_by_id(&self.pool, ticket_type.event_id)
-            .await?
-            .ok_or_else(|| anyhow!("Event not found"))?;
+        let event = self.get_event(ticket_type.event_id).await?;
 
         if !event.is_valid() {
             let effective_status = event.get_effective_status();
@@ -377,37 +382,6 @@ impl TicketService {
                 ticket_id, event.end_time
             );
             return Ok(false);
-        }
-
-        // NFT verification (if applicable)
-        if let Some(nft_id) = &ticket.nft_identifier {
-            let owner = User::find_by_id(&self.pool, ticket.owner_id)
-                .await?
-                .ok_or_else(|| anyhow!("Ticket owner not found"))?;
-
-            if let Some(public_key) = &owner.stellar_public_key {
-                let issuer_public_key = env::var("NFT_ISSUER_PUBLIC_KEY")
-                    .map_err(|_| anyhow!("NFT issuer not configured"))?;
-
-                // let is_valid = self
-                //     .stellar
-                //     .verify_nft_ownership(public_key, nft_id, &issuer_public_key)
-                //     .await?;
-
-                // if !is_valid {
-                //     info!(
-                //         "Ticket {} verification failed: NFT ownership verification failed",
-                //         ticket_id
-                //     );
-                //     return Ok(false);
-                // }
-            } else {
-                info!(
-                    "Ticket {} verification failed: owner has no Stellar wallet",
-                    ticket_id
-                );
-                return Ok(false);
-            }
         }
 
         if let Some(transaction) = Transaction::find_by_ticket(&self.pool, ticket_id).await? {
@@ -530,63 +504,6 @@ impl TicketService {
         Ok((ticket, completed_transaction))
     }
 
-    // async fn process_sponsored_usdc_payment(
-    //     &self,
-    //     user: &User,
-    //     transaction: &Transaction,
-    //     fee_calculation: &crate::services::fee_calculator::FeeCalculation,
-    // ) -> Result<crate::services::stellar::SponsoredPaymentResult> {
-    //     info!("💳 Processing sponsored USDC payment");
-
-    //     // Get platform payment account
-    //     let platform_wallet = env::var("PLATFORM_PAYMENT_PUBLIC_KEY")
-    //         .map_err(|_| anyhow!("Platform payment wallet not configured"))?;
-
-    //     // Get available sponsor account
-    //     let sponsor_info = self.sponsor_manager.get_available_sponsor().await?;
-
-    //     // Get user's encrypted secret key
-    //     let encrypted_secret = user
-    //         .stellar_secret_key_encrypted
-    //         .clone()
-    //         .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
-
-    //     // Decrypt user's secret key
-    //     let crypto = crate::services::crypto::KeyEncryption::new()
-    //         .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
-    //     let user_secret_key = crypto
-    //         .decrypt_secret_key(&encrypted_secret)
-    //         .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
-
-    //     // Check if user has USDC trustline
-    //     if let Some(user_public_key) = &user.stellar_public_key {
-    //         if !self.stellar.has_usdc_trustline(user_public_key).await? {
-    //             return Err(anyhow!("User does not have USDC trustline. Please create USDC trustline first."));
-    //         }
-    //     }
-
-    //     // Send sponsored USDC payment
-    //     let total_amount = fee_calculation.total_user_pays.to_string();
-    //     let payment_result = self
-    //         .stellar
-    //         .send_payment(
-    //             &user_secret_key,
-    //             &platform_wallet,
-    //             &total_amount,
-    //             &sponsor_info.secret_key,
-    //         )
-    //         .await?;
-
-    //     info!(
-    //         "✅ Sponsored payment successful: {} USDC sent, {} XLM gas paid by sponsor {}",
-    //         payment_result.usdc_amount_sent,
-    //         payment_result.gas_fee_xlm,
-    //         sponsor_info.account_name
-    //     );
-
-    //     Ok(payment_result)
-    // }
-
     async fn create_transaction_record_with_fees(
     &self,
     tx: &mut SqlxTransaction<'_, Postgres>,
@@ -633,26 +550,7 @@ impl TicketService {
         Ok(transaction)
     }
 
-    pub async fn create_usdc_trustline_for_user(&self, user_id: Uuid) -> Result<String> {
-        info!("🤝 Creating USDC trustline for user: {}", user_id);
-
-        let user = User::find_by_id(&self.pool, user_id)
-        .await?
-        .ok_or_else(|| anyhow!("User not found"))?;
-
-        // Use orchestrator for trustline creation
-        match self.payment_orchestrator.ensure_usdc_trustline(&user).await? {
-            Some(tx_hash) => {
-                info!("✅ USDC trustline created for user {}: {}", user_id, tx_hash);
-                 Ok(tx_hash)
-            }
-            None => {
-                info!("ℹ️ User {} already has USDC trustline", user_id);
-                Ok("TRUSTLINE_ALREADY_EXISTS".to_string())
-            }
-                
-        }
-    }
+    
 
     pub async fn get_purchase_preview(
         &self,
@@ -710,17 +608,11 @@ impl TicketService {
         &self,
         ticket_id: Uuid,
     ) -> Result<TicketStatusResponse> {
-        let ticket = Ticket::find_by_id(&self.pool, ticket_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket not found"))?;
+        let ticket = self.get_ticket(ticket_id).await?;
 
-        let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket type not found"))?;
+        let ticket_type = self.get_ticket_type(ticket.ticket_type_id).await?;
 
-        let event = Event::find_by_id(&self.pool, ticket_type.event_id)
-            .await?
-            .ok_or_else(|| anyhow!("Event not found"))?;
+        let event = self.get_event(ticket_type.event_id).await?;
 
         let effective_event_status = event.get_effective_status();
         let effective_status_clone = effective_event_status.clone();
@@ -934,140 +826,20 @@ impl TicketService {
         }
     }
 
-    async fn create_transaction_in_transaction<'a>(
-        &self,
-        tx: &mut SqlxTransaction<'a, Postgres>,
-        ticket_id: Uuid,
-        user_id: Uuid,
-        amount: BigDecimal,
-        currency: &str,
-        status: &str,
-    ) -> Result<Transaction> {
-        let id = Uuid::new_v4();
-        let now = Utc::now();
+    // fn generate_qr_code(&self, data: &str) -> Result<String> {
+    //     let code = QrCode::new(data.as_bytes())?;
 
-        let receipt_number = format!(
-            "RCT-{}-{}",
-            now.format("%Y%m%d"),
-            self.generate_random_receipt_suffix()
-        );
+    //     let svg_string = code
+    //         .render()
+    //         .min_dimensions(200, 200)
+    //         .dark_color(svg::Color("#000000"))
+    //         .light_color(svg::Color("#ffffff"))
+    //         .build();
 
-        let transaction = sqlx::query_as!(
-            Transaction,
-            r#"
-            INSERT INTO transactions (
-                id, ticket_id, user_id, amount, currency, status, created_at, updated_at, receipt_number
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING *
-            "#,
-            id, ticket_id, user_id, amount, currency, status, now, now, receipt_number
-        )
-        .fetch_one(&mut **tx)
-        .await?;
+    //     let encoded = general_purpose::STANDARD.encode(svg_string);
 
-        Ok(transaction)
-    }
-
-    async fn update_transaction_hash_in_transaction<'a>(
-        &self,
-        tx: &mut SqlxTransaction<'a, Postgres>,
-        transaction: &Transaction,
-        hash: &str,
-    ) -> Result<Transaction> {
-        let transaction = sqlx::query_as!(
-            Transaction,
-            r#"
-            UPDATE transactions
-            SET stellar_transaction_hash = $1, updated_at = $2
-            WHERE id = $3
-            RETURNING *
-            "#,
-            hash,
-            Utc::now(),
-            transaction.id
-        )
-        .fetch_one(&mut **tx)
-        .await?;
-
-        Ok(transaction)
-    }
-
-    async fn update_transaction_status_in_transaction<'a>(
-        &self,
-        tx: &mut SqlxTransaction<'a, Postgres>,
-        transaction: &Transaction,
-        status: &str,
-    ) -> Result<Transaction> {
-        let transaction = sqlx::query_as!(
-            Transaction,
-            r#"
-            UPDATE transactions
-            SET status = $1, updated_at = $2
-            WHERE id = $3
-            RETURNING *
-            "#,
-            status,
-            Utc::now(),
-            transaction.id
-        )
-        .fetch_one(&mut **tx)
-        .await?;
-
-        Ok(transaction)
-    }
-
-    async fn update_ticket_status_in_transaction<'a>(
-        &self,
-        tx: &mut SqlxTransaction<'a, Postgres>,
-        ticket: &Ticket,
-        status: &str,
-    ) -> Result<Ticket> {
-        let row = sqlx::query!(
-            r#"
-            UPDATE tickets
-            SET status = $1, updated_at = $2
-            WHERE id = $3
-            RETURNING *
-            "#,
-            status,
-            Utc::now(),
-            ticket.id
-        )
-        .fetch_one(&mut **tx)
-        .await?;
-
-        let ticket = Ticket {
-            id: row.id,
-            ticket_type_id: row.ticket_type_id,
-            owner_id: row.owner_id,
-            status: row.status,
-            qr_code: row.qr_code,
-            nft_identifier: row.nft_identifier,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-            checked_in_at: row.checked_in_at,
-            checked_in_by: row.checked_in_by,
-            pdf_url: row.pdf_url,
-        };
-
-        Ok(ticket)
-    }
-
-    fn generate_qr_code(&self, data: &str) -> Result<String> {
-        let code = QrCode::new(data.as_bytes())?;
-
-        let svg_string = code
-            .render()
-            .min_dimensions(200, 200)
-            .dark_color(svg::Color("#000000"))
-            .light_color(svg::Color("#ffffff"))
-            .build();
-
-        let encoded = general_purpose::STANDARD.encode(svg_string);
-
-        Ok(encoded)
-    }
+    //     Ok(encoded)
+    // }
 
     fn generate_random_receipt_suffix(&self) -> String {
         use rand::distr::Alphanumeric;
@@ -1081,34 +853,10 @@ impl TicketService {
     }
 
     pub async fn verify_ticket(&self, ticket_id: Uuid) -> Result<bool> {
-        let ticket = Ticket::find_by_id(&self.pool, ticket_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket not found"))?;
+        let ticket = self.get_ticket(ticket_id).await?;
 
         if ticket.status != "valid" {
             return Ok(false);
-        }
-
-        if let Some(nft_id) = &ticket.nft_identifier {
-            let owner = User::find_by_id(&self.pool, ticket.owner_id)
-                .await?
-                .ok_or_else(|| anyhow!("Ticket owner not found"))?;
-
-            let issuer_public_key = env::var("NFT_ISSUER_PUBLIC_KEY")
-                .map_err(|_| anyhow!("NFT issuer not configured"))?;
-
-            if let Some(public_key) = &owner.stellar_public_key {
-                // let is_valid = self
-                //     .stellar
-                    // .verify_nft_ownership(public_key, nft_id, &issuer_public_key)
-                    // .await?;
-
-                // if !is_valid {
-                //     return Ok(false);
-                // }
-            } else {
-                return Ok(false);
-            }
         }
 
         if let Some(transaction) = Transaction::find_by_ticket(&self.pool, ticket_id).await? {
@@ -1126,9 +874,7 @@ impl TicketService {
             return Err(anyhow!("Ticket is not valid"));
         }
 
-        let ticket = Ticket::find_by_id(&self.pool, ticket_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket not found"))?;
+        let ticket = self.get_ticket(ticket_id).await?;
 
         let ticket = ticket.check_in(&self.pool, staff_id).await?;
 
@@ -1136,21 +882,13 @@ impl TicketService {
     }
 
     pub async fn generate_pdf_ticket(&self, ticket_id: Uuid) -> Result<String> {
-        let ticket = Ticket::find_by_id(&self.pool, ticket_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket not found"))?;
+        let ticket = self.get_ticket(ticket_id).await?;
 
-        let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket type not found"))?;
+        let ticket_type = self.get_ticket_type(ticket.ticket_type_id).await?;
 
-        let event = Event::find_by_id(&self.pool, ticket_type.event_id)
-            .await?
-            .ok_or_else(|| anyhow!("Event not found"))?;
+        let event = self.get_event(ticket_type.event_id).await?;
 
-        let owner = User::find_by_id(&self.pool, ticket.owner_id)
-            .await?
-            .ok_or_else(|| anyhow!("User not found"))?;
+        let owner = self.get_user(ticket.owner_id).await?;
 
         let pdf_content = self.create_pdf_document(&ticket, &ticket_type, &event, &owner)?;
 
@@ -1168,12 +906,12 @@ impl TicketService {
 
     fn create_pdf_document(
         &self,
-        ticket: &Ticket,
-        ticket_type: &TicketType,
+        _ticket: &Ticket,
+        _ticket_type: &TicketType,
         event: &Event,
         owner: &User,
     ) -> Result<Vec<u8>> {
-        // return empty PDF until we can resolve the API issues
+        // TODO: return empty PDF until we can resolve the API issues
         let message = format!("Ticket for {} - Event: {}", owner.username, event.title);
 
         // return the message as bytes for now
@@ -1216,6 +954,7 @@ impl TicketService {
         }
     }
 
+    // TODO: configure email for ticket purchase with PDF attachment (&QR code)
     async fn send_ticket_email(&self, email: &str, pdf_url: &str, event_title: &str) -> Result<()> {
         let email_body = format!(
             "Thank you for your purchase!\n\n\
@@ -1263,9 +1002,7 @@ impl TicketService {
         from_user_id: Uuid,
         to_user_id: Uuid,
     ) -> Result<Ticket> {
-        let ticket = Ticket::find_by_id(&self.pool, ticket_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket not found"))?;
+        let ticket = self.get_ticket(ticket_id).await?;
 
         if ticket.owner_id != from_user_id {
             return Err(anyhow!("Ticket is not owned by the sender"));
@@ -1275,11 +1012,9 @@ impl TicketService {
             return Err(anyhow!("Ticket is not valid for transfer"));
         }
 
-        let to_user = User::find_by_id(&self.pool, to_user_id)
-            .await?
-            .ok_or_else(|| anyhow!("Recipient user not found"))?;
+        let _to_user = self.get_user(to_user_id).await?;
 
-        let mut tx = self.pool.begin().await?;
+        let tx = self.pool.begin().await?;
         let updated_ticket = ticket.update_owner(&self.pool, to_user_id).await?;
 
         tx.commit().await?;
@@ -1327,9 +1062,7 @@ impl TicketService {
             return Err(anyhow!("Ticket cannot be cancelled. Current status: {}", ticket.status));
         }
 
-        let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
-            .await?
-            .ok_or_else(|| anyhow!("Ticket type not found"))?;
+        let ticket_type = self.get_ticket_type(ticket.ticket_type_id).await?;
 
         let cancelled_ticket = sqlx::query_as!(
             Ticket,
@@ -1407,1435 +1140,12 @@ impl TicketService {
         let mut result = Vec::new();
 
         for ticket in tickets {
-            let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
-                .await?
-                .ok_or_else(|| anyhow!("Ticket type not found for ticket {}", ticket.id))?;
-
-            let event = Event::find_by_id(&self.pool, ticket_type.event_id)
-                .await?
-                .ok_or_else(|| anyhow!("Event not found for ticket type {}", ticket_type.id))?;
+            let ticket_type = self.get_ticket_type(ticket.ticket_type_id).await?;
+            let event = self.get_event(ticket_type.event_id).await?;
 
             result.push((ticket, ticket_type, event));
         }
 
         Ok(result)
     }
-
-    // #[allow(unused_variables)]
-// async fn process_payment(
-//     &self,
-//     user: &User,
-//     ticket_type: &TicketType,
-//     transaction: &Transaction,
-// ) -> Result<String> {
-//     let platform_wallet = env::var("PLATFORM_PAYMENT_PUBLIC_KEY")
-//         .map_err(|_| anyhow!("Platform wallet not configured"))?;
-
-//     // Get sponsor account for gas fees
-//     let sponsor_info = self.sponsor_manager.get_available_sponsor().await?;
-
-//     let encrypted_secret = user
-//         .stellar_secret_key_encrypted
-//         .clone()
-//         .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
-
-//     let crypto = crate::services::crypto::KeyEncryption::new()
-//         .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
-//     let user_secret_key = crypto
-//         .decrypt_secret_key(&encrypted_secret)
-//         .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
-
-//     let amount = transaction.amount.to_string();
-    
-//     // Use the 4-argument version of send_payment with sponsor
-//     let payment_result = self
-//         .stellar
-//         .send_payment(&user_secret_key, &platform_wallet, &amount, &sponsor_info.secret_key)
-//         .await?;
-
-//     Ok(payment_result.transaction_hash)
-// }
-
-    // pub async fn convert_to_nft(&self, ticket_id: Uuid) -> Result<Ticket> {
-    //     let ticket = Ticket::find_by_id(&self.pool, ticket_id)
-    //         .await?
-    //         .ok_or_else(|| anyhow!("Ticket not found"))?;
-
-    //     if ticket.status != "valid" {
-    //         return Err(anyhow!("Only valid tickets can be converted to NFTs"));
-    //     }
-
-    //     if ticket.nft_identifier.is_some() {
-    //         return Err(anyhow!("Ticket is already an NFT"));
-    //     }
-
-    //     let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
-    //         .await?
-    //         .ok_or_else(|| anyhow!("Ticket type not found"))?;
-
-    //     let user = User::find_by_id(&self.pool, ticket.owner_id)
-    //         .await?
-    //         .ok_or_else(|| anyhow!("User not found"))?;
-
-    //     let issuer_secret_key =
-    //         env::var("NFT_ISSUER_SECRET_KEY").map_err(|_| anyhow!("NFT issuer not configured"))?;
-
-    //     let asset_code = format!(
-    //         "TKT{}",
-    //         ticket
-    //             .id
-    //             .to_string()
-    //             .replace("-", "")
-    //             .chars()
-    //             .take(12)
-    //             .collect::<String>()
-    //     );
-
-    //     let user_public_key = user
-    //         .stellar_public_key
-    //         .clone()
-    //         .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
-
-    //     let tx_hash = self
-    //         .stellar
-    //         .issue_nft_asset(&issuer_secret_key, &asset_code, &user_public_key)
-    //         .await?;
-
-    //     let updated_ticket = ticket.set_nft_identifier(&self.pool, &asset_code).await?;
-
-    //     Ok(updated_ticket)
-    // }
-
-   
-
-        // If it's an NFT ticket, handle on chain
-        // if let Some(nft_id) = &ticket.nft_identifier {
-        //     let from_user = User::find_by_id(&self.pool, from_user_id)
-        //         .await?
-        //         .ok_or_else(|| anyhow!("Sender user not found"))?;
-
-        //     let encrypted_secret = from_user
-        //         .stellar_secret_key_encrypted
-        //         .clone()
-        //         .ok_or_else(|| anyhow!("Sender has no Stellar wallet"))?;
-
-        //     let crypto = crate::services::crypto::KeyEncryption::new()
-        //         .map_err(|e| anyhow!("Failed to create crypto service: {}", e))?;
-        //     let from_secret = crypto
-        //         .decrypt_secret_key(&encrypted_secret)
-        //         .map_err(|e| anyhow!("Failed to decrypt secret key: {}", e))?;
-
-        //     let to_public = to_user
-        //         .stellar_public_key
-        //         .clone()
-        //         .ok_or_else(|| anyhow!("Recipient has no Stellar wallet"))?;
-
-        //     let issuer_public_key = env::var("NFT_ISSUER_PUBLIC_KEY")
-        //         .map_err(|_| anyhow!("NFT issuer not configured"))?;
-
-        //     // Transfer the NFT on the blockchain
-        //     self.stellar
-        //         .transfer_nft(&from_secret, &to_public, nft_id, &issuer_public_key)
-        //         .await?;
-        // }
-
-        
-
-    // pub async fn cancel_ticket(&self, ticket_id: Uuid, user_id: Uuid) -> Result<Ticket> {
-    //     let mut tx = self.pool.begin().await?;
-
-    //     let row = sqlx::query!("SELECT * FROM tickets WHERE id = $1 FOR UPDATE", ticket_id)
-    //         .fetch_optional(&mut *tx)
-    //         .await?
-    //         .ok_or_else(|| anyhow!("Ticket not found"))?;
-
-    //     let ticket = Ticket {
-    //         id: row.id,
-    //         ticket_type_id: row.ticket_type_id,
-    //         owner_id: row.owner_id,
-    //         status: row.status,
-    //         qr_code: row.qr_code,
-    //         nft_identifier: row.nft_identifier,
-    //         created_at: row.created_at,
-    //         updated_at: row.updated_at,
-    //         checked_in_at: row.checked_in_at,
-    //         checked_in_by: row.checked_in_by,
-    //         pdf_url: row.pdf_url,
-    //     };
-
-    //     if ticket.owner_id != user_id {
-    //         return Err(anyhow!("You don't own this ticket"));
-    //     }
-
-    //     if ticket.status != "valid" {
-    //         return Err(anyhow!(
-    //             "Ticket cannot be cancelled (status: {})",
-    //             ticket.status
-    //         ));
-    //     }
-
-    //     let updated_ticket = self
-    //         .update_ticket_status_in_transaction(&mut tx, &ticket, "cancelled")
-    //         .await?;
-
-    //     let ticket_type = TicketType::find_by_id(&self.pool, ticket.ticket_type_id)
-    //         .await?
-    //         .ok_or_else(|| anyhow!("Ticket type not found"))?;
-
-    //     if ticket_type.remaining.is_some() {
-    //         ticket_type.increase_remaining(&self.pool, 1).await?;
-    //     }
-
-    //     let transaction = Transaction::find_by_ticket(&self.pool, ticket_id).await?;
-    //     if let Some(tx_record) = transaction {
-    //         if tx_record.status == "completed" && tx_record.amount.is_positive() {
-    //             let refund_secret_key = env::var("PLATFORM_REFUND_SECRET_KEY")
-    //                 .map_err(|_| anyhow!("Refund account not configured"))?;
-
-    //             let user = User::find_by_id(&self.pool, user_id)
-    //                 .await?
-    //                 .ok_or_else(|| anyhow!("User not found"))?;
-
-    //             let user_public_key = user
-    //                 .stellar_public_key
-    //                 .clone()
-    //                 .ok_or_else(|| anyhow!("User has no Stellar wallet"))?;
-
-    //             let refund_hash = self
-    //                 .stellar
-    //                 .process_refund(
-    //                     &refund_secret_key,
-    //                     &user_public_key,
-    //                     &tx_record.amount.to_string(),
-    //                 )
-    //                 .await?;
-
-    //             tx_record
-    //                 .process_refund(&self.pool, None, Some("Ticket cancelled".to_string()))
-    //                 .await?;
-    //             tx_record
-    //                 .update_refund_hash(&self.pool, &refund_hash)
-    //                 .await?;
-    //         }
-    //     }
-
-    //     tx.commit().await?;
-
-    //     Ok(updated_ticket)
-    // }
-
 }
-
-// tests
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::models::{event::Event, ticket_type::TicketType, user::User};
-//     use crate::services::crypto::KeyEncryption;
-//     use bigdecimal::BigDecimal;
-//     use std::env;
-//     use uuid::Uuid;
-
-//     fn ensure_test_env() {
-//         dotenv::from_filename(".env.test").ok();
-//         dotenv::dotenv().ok();
-//         env::set_var("APP_ENV", "test");
-
-//         // Set env variables for testing
-//         env::set_var(
-//             "NFT_ISSUER_SECRET_KEY",
-//             "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-//         );
-//         env::set_var(
-//             "NFT_ISSUER_PUBLIC_KEY",
-//             "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-//         );
-//         env::set_var("EMAIL_FROM", "test@blocstage.com");
-//     }
-
-//     async fn setup_test_db() -> PgPool {
-//         ensure_test_env();
-
-//         let database_url = env::var("TEST_DATABASE_URL")
-//             .or_else(|_| env::var("DATABASE_URL"))
-//             .expect("TEST_DATABASE_URL or DATABASE_URL must be set for tests");
-
-//         let pool = PgPool::connect(&database_url)
-//             .await
-//             .expect("Failed to connect to test database");
-
-//         sqlx::migrate!("./migrations")
-//             .run(&pool)
-//             .await
-//             .expect("Failed to run migrations");
-
-//         pool
-//     }
-
-//     // Helpers
-//     async fn create_test_user(pool: &PgPool, suffix: &str) -> Uuid {
-//         let unique_id = Uuid::new_v4().simple().to_string();
-//         let user_id = Uuid::new_v4();
-
-//         sqlx::query!(
-//             "INSERT INTO users (id, username, email, password_hash, created_at, updated_at, email_verified, status, role) VALUES ($1, $2, $3, $4, NOW(), NOW(), true, 'active', 'user')",
-//             user_id,
-//             format!("testuser_{}_{}", suffix, unique_id),
-//             format!("test_{}+{}@example.com", suffix, unique_id),
-//             "hashed_password"
-//         )
-//         .execute(pool)
-//         .await
-//         .expect("Failed to create test user");
-
-//         user_id
-//     }
-
-//     async fn create_test_event(pool: &PgPool, organizer_id: Uuid, suffix: &str) -> Uuid {
-//         let event_id = Uuid::new_v4();
-//         let unique_id = Uuid::new_v4().simple().to_string();
-
-//         sqlx::query!(
-//             "INSERT INTO events (id, organizer_id, title, description, location, start_time, end_time, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())",
-//             event_id,
-//             organizer_id,
-//             format!("Test Event {}", suffix),
-//             format!("Test event description {}", unique_id),
-//             "Test Location",
-//             chrono::Utc::now() + chrono::Duration::hours(24),
-//             chrono::Utc::now() + chrono::Duration::hours(26),
-//             "active"
-//         )
-//         .execute(pool)
-//         .await
-//         .expect("Failed to create test event");
-
-//         event_id
-//     }
-
-//     async fn create_test_ticket_type(
-//         pool: &PgPool,
-//         event_id: Uuid,
-//         suffix: &str,
-//         price: Option<&str>,
-//         total_supply: Option<i32>,
-//     ) -> Uuid {
-//         let ticket_type_id = Uuid::new_v4();
-//         let unique_id = Uuid::new_v4().simple().to_string();
-
-//         let price_decimal =
-//             price.map(|p| BigDecimal::parse_bytes(p.as_bytes(), 10).expect("Invalid price"));
-
-//         sqlx::query!(
-//             "INSERT INTO ticket_types (id, event_id, name, description, price, currency, total_supply, remaining, is_active, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())",
-//             ticket_type_id,
-//             event_id,
-//             format!("Test Ticket {}", suffix),
-//             format!("Test ticket description {}", unique_id),
-//             price_decimal,
-//             "XLM",
-//             total_supply,
-//             total_supply,
-//             true
-//         )
-//         .execute(pool)
-//         .await
-//         .expect("Failed to create test ticket type");
-
-//         ticket_type_id
-//     }
-
-//     async fn add_stellar_keys_to_user(pool: &PgPool, user_id: Uuid) {
-//         let public_key = "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
-//         let secret_key = "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
-
-//         let crypto = KeyEncryption::new().expect("Failed to create KeyEncryption");
-//         let encrypted_secret = crypto
-//             .encrypt_secret_key(secret_key)
-//             .unwrap_or_else(|_| secret_key.to_string());
-
-//         sqlx::query!(
-//             "UPDATE users SET stellar_public_key = $1, stellar_secret_key_encrypted = $2 WHERE id = $3",
-//             public_key,
-//             encrypted_secret,
-//             user_id
-//         )
-//         .execute(pool)
-//         .await
-//         .expect("Failed to add stellar keys to user");
-//     }
-
-//     // Cleanup helpers
-//     async fn cleanup_test_user(pool: &PgPool, user_id: Uuid) {
-//         let _ = sqlx::query!("DELETE FROM users WHERE id = $1", user_id)
-//             .execute(pool)
-//             .await;
-//     }
-
-//     async fn cleanup_test_event(pool: &PgPool, event_id: Uuid) {
-//         let _ = sqlx::query!("DELETE FROM events WHERE id = $1", event_id)
-//             .execute(pool)
-//             .await;
-//     }
-
-//     async fn cleanup_test_ticket_type(pool: &PgPool, ticket_type_id: Uuid) {
-//         let _ = sqlx::query!("DELETE FROM ticket_types WHERE id = $1", ticket_type_id)
-//             .execute(pool)
-//             .await;
-//     }
-
-//     async fn cleanup_test_ticket(pool: &PgPool, ticket_id: Uuid) {
-//         let _ = sqlx::query!("DELETE FROM tickets WHERE id = $1", ticket_id)
-//             .execute(pool)
-//             .await;
-//     }
-
-//     mod service_initialization {
-//         use super::*;
-
-//         #[tokio::test]
-//         async fn test_new_service_success() {
-//             let pool = setup_test_db().await;
-
-//             let result = TicketService::new(pool).await;
-//             assert!(
-//                 result.is_ok(),
-//                 "TicketService should initialize successfully"
-//             );
-
-//             let service = result.unwrap();
-//             assert!(
-//                 service.pool.is_closed() == false,
-//                 "Database pool should be active"
-//             );
-//         }
-
-//         #[tokio::test]
-//         async fn test_initialize_s3_without_credentials() {
-//             // This test checks S3 initialization without AWS credentials
-//             // It should not fail but should log a warning
-//             let result = TicketService::initialize_s3().await;
-
-//             // S3 initialization might fail without proper AWS credentials in test environment
-//             // This is expected behavior and service should still work without S3
-//             match result {
-//                 Ok(_) => {
-//                     // S3 initialized successfully (perhaps with default credentials)
-//                 }
-//                 Err(_) => {
-//                     // Expected in test environment without AWS credentials
-//                 }
-//             }
-//         }
-//     }
-
-//     mod ticket_purchasing {
-//         use super::*;
-
-//         #[tokio::test]
-//         async fn test_purchase_free_ticket_success() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             let event_id = create_test_event(&pool, organizer_id, "free_ticket").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "free", None, Some(10)).await;
-
-//             let result = service.purchase_ticket(ticket_type_id, user_id).await;
-//             assert!(result.is_ok(), "Free ticket purchase should succeed");
-
-//             let (ticket, _transaction) = result.unwrap();
-//             assert_eq!(ticket.owner_id, user_id);
-//             assert_eq!(ticket.ticket_type_id, ticket_type_id);
-//             assert_eq!(ticket.status, "valid");
-//             assert!(ticket.qr_code.is_some(), "QR code should be generated");
-
-//             // Verify remaining count decreased
-//             let updated_ticket_type = TicketType::find_by_id(&pool, ticket_type_id)
-//                 .await
-//                 .expect("Should find ticket type")
-//                 .expect("Ticket type should exist");
-//             assert_eq!(
-//                 updated_ticket_type.remaining,
-//                 Some(9),
-//                 "Remaining count should decrease"
-//             );
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_purchase_ticket_no_remaining() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             let event_id = create_test_event(&pool, organizer_id, "sold_out").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "sold_out", None, Some(0)).await;
-
-//             let result = service.purchase_ticket(ticket_type_id, user_id).await;
-//             assert!(result.is_err(), "Should fail when no tickets remaining");
-//             assert!(result
-//                 .unwrap_err()
-//                 .to_string()
-//                 .contains("No tickets remaining"));
-
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_purchase_ticket_inactive_sales() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             let event_id = create_test_event(&pool, organizer_id, "inactive").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "inactive", None, Some(10)).await;
-
-//             // Deactivate ticket sales
-//             sqlx::query!(
-//                 "UPDATE ticket_types SET is_active = false WHERE id = $1",
-//                 ticket_type_id
-//             )
-//             .execute(&pool)
-//             .await
-//             .expect("Failed to deactivate ticket type");
-
-//             let result = service.purchase_ticket(ticket_type_id, user_id).await;
-//             assert!(
-//                 result.is_err(),
-//                 "Should fail when ticket sales are inactive"
-//             );
-//             assert!(result
-//                 .unwrap_err()
-//                 .to_string()
-//                 .contains("not currently active"));
-
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_purchase_ticket_user_not_found() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let event_id = create_test_event(&pool, organizer_id, "no_user").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "no_user", None, Some(10)).await;
-//             let nonexistent_user_id = Uuid::new_v4();
-
-//             let result = service
-//                 .purchase_ticket(ticket_type_id, nonexistent_user_id)
-//                 .await;
-//             assert!(result.is_err(), "Should fail when user not found");
-//             assert!(result.unwrap_err().to_string().contains("User not found"));
-
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_purchase_paid_ticket_simulation() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             add_stellar_keys_to_user(&pool, user_id).await;
-
-//             let event_id = create_test_event(&pool, organizer_id, "paid").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "paid", Some("25.0"), Some(5)).await;
-
-//             // This will likely fail due to mock payment processing, but test the flow
-//             let result = service.purchase_ticket(ticket_type_id, user_id).await;
-
-//             // In test env with mock stellar service, this might succeed or fail
-//             // depending on payment processing implementation
-//             match result {
-//                 Ok((ticket, _transaction)) => {
-//                     assert_eq!(ticket.owner_id, user_id);
-//                     cleanup_test_ticket(&pool, ticket.id).await;
-//                 }
-//                 Err(e) => {
-//                     // Expected if payment processing fails in test env
-//                     println!("Paid ticket purchase failed as expected in test: {}", e);
-//                 }
-//             }
-
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-//     }
-
-//     mod ticket_verification {
-//         use super::*;
-
-//         #[tokio::test]
-//         async fn test_verify_valid_ticket() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             let event_id = create_test_event(&pool, organizer_id, "verify").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "verify", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, user_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             let is_valid = service
-//                 .verify_ticket(ticket.id)
-//                 .await
-//                 .expect("Verification should complete");
-//             assert!(is_valid, "Valid ticket should verify successfully");
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_verify_nonexistent_ticket() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let nonexistent_ticket_id = Uuid::new_v4();
-//             let result = service.verify_ticket(nonexistent_ticket_id).await;
-
-//             assert!(result.is_err(), "Should fail for nonexistent ticket");
-//             assert!(result.unwrap_err().to_string().contains("Ticket not found"));
-//         }
-
-//         #[tokio::test]
-//         async fn test_verify_cancelled_ticket() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             let event_id = create_test_event(&pool, organizer_id, "cancelled").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "cancelled", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, user_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             // Manually set ticket status to cancelled
-//             sqlx::query!(
-//                 "UPDATE tickets SET status = 'cancelled' WHERE id = $1",
-//                 ticket.id
-//             )
-//             .execute(&pool)
-//             .await
-//             .expect("Failed to cancel ticket");
-
-//             let is_valid = service
-//                 .verify_ticket(ticket.id)
-//                 .await
-//                 .expect("Verification should complete");
-//             assert!(!is_valid, "Cancelled ticket should not verify");
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-//     }
-
-//     mod ticket_checkin {
-//         use super::*;
-
-//         #[tokio::test]
-//         async fn test_check_in_valid_ticket() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             let staff_id = create_test_user(&pool, "staff").await;
-//             let event_id = create_test_event(&pool, organizer_id, "checkin").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "checkin", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, user_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             let result = service.check_in_ticket(ticket.id, staff_id).await;
-//             assert!(result.is_ok(), "Check-in should succeed for valid ticket");
-
-//             let checked_in_ticket = result.unwrap();
-//             assert_eq!(checked_in_ticket.status, "used");
-//             assert!(
-//                 checked_in_ticket.checked_in_at.is_some(),
-//                 "Check-in time should be set"
-//             );
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, staff_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_check_in_invalid_ticket() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let staff_id = create_test_user(&pool, "staff").await;
-//             let nonexistent_ticket_id = Uuid::new_v4();
-
-//             let result = service
-//                 .check_in_ticket(nonexistent_ticket_id, staff_id)
-//                 .await;
-//             assert!(result.is_err(), "Check-in should fail for invalid ticket");
-
-//             cleanup_test_user(&pool, staff_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_check_in_already_used_ticket() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             let staff_id = create_test_user(&pool, "staff").await;
-//             let event_id = create_test_event(&pool, organizer_id, "used").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "used", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, user_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             // First check-in should succeed
-//             let first_checkin = service.check_in_ticket(ticket.id, staff_id).await;
-//             assert!(first_checkin.is_ok(), "First check-in should succeed");
-
-//             // Second check-in should fail
-//             let second_checkin = service.check_in_ticket(ticket.id, staff_id).await;
-//             assert!(second_checkin.is_err(), "Second check-in should fail");
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, staff_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-//     }
-
-//     mod ticket_transfer {
-//         use super::*;
-
-//         #[tokio::test]
-//         async fn test_transfer_ticket_success() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let from_user_id = create_test_user(&pool, "from_user").await;
-//             let to_user_id = create_test_user(&pool, "to_user").await;
-//             let event_id = create_test_event(&pool, organizer_id, "transfer").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "transfer", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, from_user_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             let result = service
-//                 .transfer_ticket(ticket.id, from_user_id, to_user_id)
-//                 .await;
-//             assert!(result.is_ok(), "Ticket transfer should succeed");
-
-//             let transferred_ticket = result.unwrap();
-//             assert_eq!(
-//                 transferred_ticket.owner_id, to_user_id,
-//                 "Ownership should transfer to new user"
-//             );
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, from_user_id).await;
-//             cleanup_test_user(&pool, to_user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_transfer_ticket_not_owner() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let owner_id = create_test_user(&pool, "owner").await;
-//             let non_owner_id = create_test_user(&pool, "non_owner").await;
-//             let to_user_id = create_test_user(&pool, "to_user").await;
-//             let event_id = create_test_event(&pool, organizer_id, "not_owner").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "not_owner", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, owner_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             let result = service
-//                 .transfer_ticket(ticket.id, non_owner_id, to_user_id)
-//                 .await;
-//             assert!(
-//                 result.is_err(),
-//                 "Transfer should fail when sender is not owner"
-//             );
-//             assert!(result
-//                 .unwrap_err()
-//                 .to_string()
-//                 .contains("not owned by the sender"));
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, owner_id).await;
-//             cleanup_test_user(&pool, non_owner_id).await;
-//             cleanup_test_user(&pool, to_user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_transfer_invalid_ticket() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let from_user_id = create_test_user(&pool, "from_user").await;
-//             let to_user_id = create_test_user(&pool, "to_user").await;
-//             let event_id = create_test_event(&pool, organizer_id, "invalid").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "invalid", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, from_user_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             // Cancel the ticket to make it invalid for transfer
-//             sqlx::query!(
-//                 "UPDATE tickets SET status = 'cancelled' WHERE id = $1",
-//                 ticket.id
-//             )
-//             .execute(&pool)
-//             .await
-//             .expect("Failed to cancel ticket");
-
-//             let result = service
-//                 .transfer_ticket(ticket.id, from_user_id, to_user_id)
-//                 .await;
-//             assert!(result.is_err(), "Transfer should fail for invalid ticket");
-//             assert!(result
-//                 .unwrap_err()
-//                 .to_string()
-//                 .contains("not valid for transfer"));
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, from_user_id).await;
-//             cleanup_test_user(&pool, to_user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_transfer_to_nonexistent_user() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let from_user_id = create_test_user(&pool, "from_user").await;
-//             let nonexistent_user_id = Uuid::new_v4();
-//             let event_id = create_test_event(&pool, organizer_id, "no_recipient").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "no_recipient", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, from_user_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             let result = service
-//                 .transfer_ticket(ticket.id, from_user_id, nonexistent_user_id)
-//                 .await;
-//             assert!(
-//                 result.is_err(),
-//                 "Transfer should fail for nonexistent recipient"
-//             );
-//             assert!(result
-//                 .unwrap_err()
-//                 .to_string()
-//                 .contains("Recipient user not found"));
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, from_user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-//     }
-
-//     // mod ticket_cancellation {
-//     //     use super::*;
-
-//     //     #[tokio::test]
-//     //     async fn test_cancel_ticket_success() {
-//     //         let pool = setup_test_db().await;
-//     //         let service = TicketService::new(pool.clone())
-//     //             .await
-//     //             .expect("Failed to create service");
-
-//     //         let organizer_id = create_test_user(&pool, "organizer").await;
-//     //         let user_id = create_test_user(&pool, "buyer").await;
-//     //         add_stellar_keys_to_user(&pool, user_id).await;
-
-//     //         let event_id = create_test_event(&pool, organizer_id, "cancel").await;
-//     //         let ticket_type_id =
-//     //             create_test_ticket_type(&pool, event_id, "cancel", None, Some(10)).await;
-
-//     //         let (ticket,_transaction) = service
-//     //             .purchase_ticket(ticket_type_id, user_id)
-//     //             .await
-//     //             .expect("Ticket purchase should succeed");
-
-//     //         let result = service.cancel_ticket(ticket.id, user_id).await;
-
-//     //         // Cancellation might succeed or fail depending on payment/refund processing
-//     //         // In test environment, this is acceptable behavior
-//     //         match result {
-//     //             Ok(cancelled_ticket) => {
-//     //                 assert_eq!(cancelled_ticket.status, "cancelled");
-//     //             }
-//     //             Err(e) => {
-//     //                 // Expected if refund processing fails in test environment
-//     //                 println!("Ticket cancellation failed as expected in test: {}", e);
-//     //             }
-//     //         }
-
-//     //         cleanup_test_ticket(&pool, ticket.id).await;
-//     //         cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//     //         cleanup_test_event(&pool, event_id).await;
-//     //         cleanup_test_user(&pool, user_id).await;
-//     //         cleanup_test_user(&pool, organizer_id).await;
-//     //     }
-
-//     //     #[tokio::test]
-//     //     async fn test_cancel_nonexistent_ticket() {
-//     //         let pool = setup_test_db().await;
-//     //         let service = TicketService::new(pool.clone())
-//     //             .await
-//     //             .expect("Failed to create service");
-
-//     //         let user_id = create_test_user(&pool, "user").await;
-//     //         let nonexistent_ticket_id = Uuid::new_v4();
-
-//     //         let result = service.cancel_ticket(nonexistent_ticket_id, user_id).await;
-//     //         assert!(result.is_err(), "Should fail for nonexistent ticket");
-//     //         assert!(result.unwrap_err().to_string().contains("Ticket not found"));
-
-//     //         cleanup_test_user(&pool, user_id).await;
-//     //     }
-//     // }
-
-//     mod nft_operations {
-//         use super::*;
-
-//         #[tokio::test]
-//         async fn test_convert_to_nft_success() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             add_stellar_keys_to_user(&pool, user_id).await;
-
-//             let event_id = create_test_event(&pool, organizer_id, "nft").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "nft", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, user_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             let result = service.convert_to_nft(ticket.id).await;
-
-//             // NFT conversion might succeed or fail depending on stellar service mock
-//             match result {
-//                 Ok(nft_ticket) => {
-//                     assert!(
-//                         nft_ticket.nft_identifier.is_some(),
-//                         "NFT identifier should be set"
-//                     );
-
-//                     // Try converting again - should fail
-//                     let second_conversion = service.convert_to_nft(ticket.id).await;
-//                     assert!(second_conversion.is_err(), "Second conversion should fail");
-//                     assert!(second_conversion
-//                         .unwrap_err()
-//                         .to_string()
-//                         .contains("already an NFT"));
-//                 }
-//                 Err(e) => {
-//                     // Expected if NFT creation fails in test environment
-//                     println!("NFT conversion failed as expected in test: {}", e);
-//                 }
-//             }
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_convert_invalid_ticket_to_nft() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             add_stellar_keys_to_user(&pool, user_id).await;
-
-//             let event_id = create_test_event(&pool, organizer_id, "invalid_nft").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "invalid_nft", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, user_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             // Cancel the ticket to make it invalid
-//             sqlx::query!(
-//                 "UPDATE tickets SET status = 'cancelled' WHERE id = $1",
-//                 ticket.id
-//             )
-//             .execute(&pool)
-//             .await
-//             .expect("Failed to cancel ticket");
-
-//             let result = service.convert_to_nft(ticket.id).await;
-//             assert!(
-//                 result.is_err(),
-//                 "NFT conversion should fail for invalid ticket"
-//             );
-//             assert!(result
-//                 .unwrap_err()
-//                 .to_string()
-//                 .contains("Only valid tickets"));
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_convert_to_nft_user_no_wallet() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-
-//             let event_id = create_test_event(&pool, organizer_id, "no_wallet").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "no_wallet", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, user_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             let result = service.convert_to_nft(ticket.id).await;
-//             assert!(
-//                 result.is_err(),
-//                 "NFT conversion should fail when user has no wallet"
-//             );
-//             assert!(result
-//                 .unwrap_err()
-//                 .to_string()
-//                 .contains("no Stellar wallet"));
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-//     }
-
-//     mod pdf_generation {
-//         use super::*;
-
-//         #[tokio::test]
-//         async fn test_generate_pdf_ticket_success() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             let event_id = create_test_event(&pool, organizer_id, "pdf").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "pdf", None, Some(10)).await;
-
-//             let (ticket, _transaction) = service
-//                 .purchase_ticket(ticket_type_id, user_id)
-//                 .await
-//                 .expect("Ticket purchase should succeed");
-
-//             let result = service.generate_pdf_ticket(ticket.id).await;
-
-//             // PDF generation might succeed or fail depending on storage configuration
-//             match result {
-//                 Ok(pdf_url) => {
-//                     assert!(!pdf_url.is_empty(), "PDF URL should not be empty");
-//                     assert!(
-//                         pdf_url.contains("tickets/"),
-//                         "PDF URL should contain tickets path"
-//                     );
-//                 }
-//                 Err(e) => {
-//                     // Expected if S3/storage is not configured in test environment
-//                     println!("PDF generation failed as expected in test: {}", e);
-//                 }
-//             }
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_generate_pdf_nonexistent_ticket() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let nonexistent_ticket_id = Uuid::new_v4();
-
-//             let result = service.generate_pdf_ticket(nonexistent_ticket_id).await;
-//             assert!(
-//                 result.is_err(),
-//                 "PDF generation should fail for nonexistent ticket"
-//             );
-//             assert!(result.unwrap_err().to_string().contains("Ticket not found"));
-//         }
-//     }
-
-//     mod qr_code_generation {
-//         use super::*;
-
-//         #[tokio::test]
-//         async fn test_generate_qr_code_success() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let test_data = "ticket:12345:67890:1234567890";
-//             let result = service.generate_qr_code(test_data);
-
-//             assert!(result.is_ok(), "QR code generation should succeed");
-//             let qr_code = result.unwrap();
-//             assert!(!qr_code.is_empty(), "QR code should not be empty");
-
-//             let decoded = general_purpose::STANDARD.decode(&qr_code);
-//             assert!(decoded.is_ok(), "QR code should be valid base64");
-
-//             let svg_content = String::from_utf8(decoded.unwrap()).unwrap();
-//             assert!(svg_content.contains("svg"), "Decoded content should be SVG");
-//         }
-
-//         #[tokio::test]
-//         async fn test_generate_qr_code_empty_data() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let result = service.generate_qr_code("");
-
-//             // QR code generation might succeed with empty data
-//             match result {
-//                 Ok(qr_code) => {
-//                     assert!(
-//                         !qr_code.is_empty(),
-//                         "QR code should not be empty even with empty data"
-//                     );
-//                 }
-//                 Err(_) => {
-//                     // Also acceptable if QR generation fails with empty data
-//                 }
-//             }
-//         }
-
-//         #[tokio::test]
-//         async fn test_generate_qr_code_large_data() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let large_data = "A".repeat(1000);
-//             let result = service.generate_qr_code(&large_data);
-
-//             // QR code generation might succeed or fail with large data
-//             match result {
-//                 Ok(qr_code) => {
-//                     assert!(!qr_code.is_empty(), "QR code should not be empty");
-//                 }
-//                 Err(_) => {
-//                     // Acceptable if QR generation fails with too much data
-//                 }
-//             }
-//         }
-//     }
-
-//     mod concurrent_operations {
-//         use super::*;
-
-//         #[tokio::test]
-//         async fn test_concurrent_ticket_purchases() {
-//             let pool = setup_test_db().await;
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let event_id = create_test_event(&pool, organizer_id, "concurrent").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "concurrent", None, Some(5)).await;
-
-//             // Create multiple users
-//             let mut user_ids = Vec::new();
-//             for i in 0..10 {
-//                 let user_id = create_test_user(&pool, &format!("buyer_{}", i)).await;
-//                 user_ids.push(user_id);
-//             }
-
-//             // Attempt concurrent purchases
-//             let mut handles = Vec::new();
-//             for user_id in &user_ids {
-//                 let pool_clone = pool.clone();
-//                 let user_id_clone = *user_id;
-//                 let ticket_type_id_clone = ticket_type_id;
-
-//                 let handle = tokio::spawn(async move {
-//                     let service = TicketService::new(pool_clone)
-//                         .await
-//                         .expect("Failed to create service");
-//                     service
-//                         .purchase_ticket(ticket_type_id_clone, user_id_clone)
-//                         .await
-//                 });
-//                 handles.push(handle);
-//             }
-
-//             // Wait for all attempts to complete
-//             let mut results = Vec::new();
-//             for handle in handles {
-//                 let result = handle.await.expect("Task should complete");
-//                 results.push(result);
-//             }
-
-//             // Count successful purchases
-//             let successful_purchases: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
-//             let failed_purchases: Vec<_> = results.iter().filter(|r| r.is_err()).collect();
-
-//             // Should have exactly 5 successful purchases (limited supply)
-//             assert_eq!(
-//                 successful_purchases.len(),
-//                 5,
-//                 "Should have exactly 5 successful purchases"
-//             );
-//             assert_eq!(
-//                 failed_purchases.len(),
-//                 5,
-//                 "Should have exactly 5 failed purchases"
-//             );
-
-//             // Clean up successful tickets
-//             for result in &results {
-//                 if let Ok((ticket, _transaction)) = result {
-//                     cleanup_test_ticket(&pool, ticket.id).await;
-//                 }
-//             }
-
-//             // Clean up users and other data
-//             for user_id in user_ids {
-//                 cleanup_test_user(&pool, user_id).await;
-//             }
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-//     }
-
-//     mod edge_cases {
-//         use super::*;
-
-//         #[tokio::test]
-//         async fn test_purchase_unlimited_tickets() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             let event_id = create_test_event(&pool, organizer_id, "unlimited").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "unlimited", None, None).await; // No limit
-
-//             let result = service.purchase_ticket(ticket_type_id, user_id).await;
-//             assert!(result.is_ok(), "Unlimited ticket purchase should succeed");
-
-//             let (ticket, _transaction) = result.unwrap();
-
-//             // Verify remaining count is still None (unlimited)
-//             let updated_ticket_type = TicketType::find_by_id(&pool, ticket_type_id)
-//                 .await
-//                 .expect("Should find ticket type")
-//                 .expect("Ticket type should exist");
-//             assert!(
-//                 updated_ticket_type.remaining.is_none(),
-//                 "Remaining should still be None for unlimited"
-//             );
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-
-//         #[tokio::test]
-//         async fn test_purchase_exactly_last_ticket() {
-//             let pool = setup_test_db().await;
-//             let service = TicketService::new(pool.clone())
-//                 .await
-//                 .expect("Failed to create service");
-
-//             let organizer_id = create_test_user(&pool, "organizer").await;
-//             let user_id = create_test_user(&pool, "buyer").await;
-//             let event_id = create_test_event(&pool, organizer_id, "last_ticket").await;
-//             let ticket_type_id =
-//                 create_test_ticket_type(&pool, event_id, "last_ticket", None, Some(1)).await;
-
-//             let result = service.purchase_ticket(ticket_type_id, user_id).await;
-//             assert!(result.is_ok(), "Last ticket purchase should succeed");
-
-//             let (ticket, _transaction)  = result.unwrap();
-
-//             let updated_ticket_type = TicketType::find_by_id(&pool, ticket_type_id)
-//                 .await
-//                 .expect("Should find ticket type")
-//                 .expect("Ticket type should exist");
-//             assert_eq!(
-//                 updated_ticket_type.remaining,
-//                 Some(0),
-//                 "Remaining should be 0"
-//             );
-
-//             // Try to purchase another ticket - should fail
-//             let user_id_2 = create_test_user(&pool, "buyer_2").await;
-//             let second_result = service.purchase_ticket(ticket_type_id, user_id_2).await;
-//             assert!(
-//                 second_result.is_err(),
-//                 "Second purchase should fail when sold out"
-//             );
-
-//             cleanup_test_ticket(&pool, ticket.id).await;
-//             cleanup_test_ticket_type(&pool, ticket_type_id).await;
-//             cleanup_test_event(&pool, event_id).await;
-//             cleanup_test_user(&pool, user_id).await;
-//             cleanup_test_user(&pool, user_id_2).await;
-//             cleanup_test_user(&pool, organizer_id).await;
-//         }
-//     }
-// }

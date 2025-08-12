@@ -26,7 +26,7 @@ impl TemplateRenderer {
     }
 }
 
-// Base email template with BlocStage branding
+// Base email template
 const EMAIL_BASE: &str = r#"
 <!DOCTYPE html>
 <html>

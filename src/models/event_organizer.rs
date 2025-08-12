@@ -57,7 +57,9 @@ impl EventOrganizer {
         added_by: Uuid,
     ) -> Result<Self> {
         if Self::is_organizer(pool, event_id, user_id).await? {
-            return Err(anyhow::anyhow!("User is already an organizer for this event"));
+            return Err(anyhow::anyhow!(
+                "User is already an organizer for this event"
+            ));
         }
 
         let count = Self::count_organizers(pool, event_id).await?;
@@ -68,7 +70,7 @@ impl EventOrganizer {
         let default_permissions = serde_json::json!({
             "edit_event": true,
             "manage_tickets": true,
-            "check_in_guests": true, 
+            "check_in_guests": true,
             "view_analytics": true,
             "manage_organizers": false,
             "cancel_event": false
@@ -99,7 +101,8 @@ impl EventOrganizer {
         user_id: Uuid,
         removed_by: Uuid,
     ) -> Result<()> {
-        let organizer = Self::get_organizer(pool, event_id, user_id).await?
+        let organizer = Self::get_organizer(pool, event_id, user_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("User is not an organizer for this event"))?;
 
         if organizer.role == "owner" {
@@ -107,7 +110,9 @@ impl EventOrganizer {
         }
 
         if !Self::is_owner(pool, event_id, removed_by).await? {
-            return Err(anyhow::anyhow!("Only the event owner can remove organizers"));
+            return Err(anyhow::anyhow!(
+                "Only the event owner can remove organizers"
+            ));
         }
 
         sqlx::query!(
@@ -130,10 +135,13 @@ impl EventOrganizer {
         updated_by: Uuid,
     ) -> Result<Self> {
         if !Self::is_owner(pool, event_id, updated_by).await? {
-            return Err(anyhow::anyhow!("Only the event owner can update permissions"));
+            return Err(anyhow::anyhow!(
+                "Only the event owner can update permissions"
+            ));
         }
 
-        let organizer = Self::get_organizer(pool, event_id, user_id).await?
+        let organizer = Self::get_organizer(pool, event_id, user_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("User is not an organizer for this event"))?;
 
         if organizer.role == "owner" {
@@ -181,9 +189,8 @@ impl EventOrganizer {
         .fetch_all(pool)
         .await?;
 
-        let mut organizers = Vec::new();
-        for row in rows {
-            organizers.push(OrganizerInfo {
+        let organizers = rows.into_iter()
+            .map(|row| OrganizerInfo {
                 organizer: EventOrganizer {
                     id: row.id,
                     event_id: row.event_id,
@@ -198,8 +205,8 @@ impl EventOrganizer {
                     username: row.username,
                     email: row.email,
                 },
-            });
-        }
+            })
+            .collect();
 
         Ok(organizers)
     }
@@ -267,7 +274,7 @@ impl EventOrganizer {
         permission: &str,
     ) -> Result<bool> {
         let organizer = Self::get_organizer(pool, event_id, user_id).await?;
-        
+
         match organizer {
             Some(org) => {
                 let permissions: OrganizerPermissions = serde_json::from_value(org.permissions)?;
@@ -286,7 +293,7 @@ impl EventOrganizer {
         }
     }
 
-    /// Find user by username or email
+    /// find user by username or email
     pub async fn find_user_by_identifier(pool: &PgPool, identifier: &str) -> Result<Option<Uuid>> {
         let user_id = sqlx::query_scalar!(
             r#"
