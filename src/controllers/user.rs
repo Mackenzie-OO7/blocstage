@@ -1,11 +1,11 @@
-use crate::middleware::auth::AuthenticatedUser;
 use crate::models::user::User;
 use crate::services::stellar::StellarService;
+use crate::services::RedisService;
+use crate::{middleware::auth::AuthenticatedUser};
 use actix_web::{web, HttpResponse, Responder};
-use anyhow::Result;
-use log::{error, info};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
-use serde_json;
+use serde_json::{self, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -15,30 +15,48 @@ struct ErrorResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct UpdateProfileRequest {
+pub struct UpdateProfileRequest {
     username: Option<String>,
     // TODO: email updates would require verification
 }
 
 #[derive(Debug, Deserialize)]
-struct UpdatePasswordRequest {
+pub struct UpdatePasswordRequest {
     current_password: String,
     new_password: String,
 }
 
+#[derive(Serialize)]
+pub struct WalletInfo {
+    pub public_key: String,
+    pub usdc_balance: Option<f64>,
+    pub has_usdc_trustline: bool,
+    pub primary_currency: String,
+}
+
+#[derive(Serialize)]
+pub struct WalletSetupStatus {
+    pub has_wallet: bool,
+    pub has_usdc_trustline: bool,
+    pub usdc_balance: Option<f64>,
+    pub setup_required: Vec<String>,
+    pub ready_for_payments: bool,
+}
+
 #[derive(Debug, Deserialize)]
-struct GenerateWalletRequest {
+pub struct GenerateWalletRequest {
     // TODO: add options
 }
 
 pub async fn get_profile(
-    pool: web::Data<PgPool>,
-    user: AuthenticatedUser,
+    pool: web::Data<PgPool>, 
+    user: AuthenticatedUser
 ) -> impl Responder {
     match User::find_by_id(&pool, user.id).await {
-        Ok(Some(user_profile)) => HttpResponse::Ok().json(user_profile),
+        Ok(Some(user_profile)) => {
+            HttpResponse::Ok().json(user_profile)
+        }
         Ok(None) => {
-            // But this shouldn't happen if middleware is working well
             error!("User found in token but not in database: {}", user.id);
             HttpResponse::NotFound().json(ErrorResponse {
                 error: "User profile not found".to_string(),
@@ -210,10 +228,7 @@ pub async fn update_password(
     }
 }
 
-pub async fn get_wallet_info(
-    pool: web::Data<PgPool>,
-    user: AuthenticatedUser,
-) -> impl Responder {
+pub async fn get_wallet_info(pool: web::Data<PgPool>, user: AuthenticatedUser) -> impl Responder {
     match User::find_by_id(&pool, user.id).await {
         Ok(Some(user_profile)) => {
             let stellar = match StellarService::new() {
@@ -236,32 +251,33 @@ pub async fn get_wallet_info(
                 }
             };
 
-            let balance_future = async {
-                if let Some(key) = &user_profile.stellar_public_key {
-                    match stellar.get_xlm_balance(key).await {
-                        Ok(balance) => Some(balance),
-                        Err(e) => {
-                            error!("Failed to fetch balance from Stellar: {}", e);
-                            None
-                        }
-                    }
-                } else {
+            let _xlm_balance = match stellar.get_xlm_balance(&public_key).await {
+                Ok(balance) => Some(balance),
+                Err(e) => {
+                    error!("Failed to fetch XLM balance: {}", e);
                     None
                 }
             };
 
-            match balance_future.await {
-                Some(balance) => HttpResponse::Ok().json(serde_json::json!({
-                    "public_key": public_key,
-                    "balance": balance,
-                    "currency": "XLM"
-                })),
-                None => HttpResponse::Ok().json(serde_json::json!({
-                    "public_key": public_key,
-                    "balance": null,
-                    "currency": "XLM"
-                })),
-            }
+            let (usdc_balance, has_trustline) = match stellar.get_usdc_balance(&public_key).await {
+                Ok(balance) => (Some(balance), true),
+                Err(_) => {
+                    // Check if it's a trustline issue or account issue
+                    match stellar.has_usdc_trustline(&public_key).await {
+                        Ok(has_trustline) => (None, has_trustline),
+                        Err(_) => (None, false),
+                    }
+                }
+            };
+
+            let wallet_info = WalletInfo {
+                public_key,
+                usdc_balance,
+                has_usdc_trustline: has_trustline,
+                primary_currency: "USDC".to_string(),
+            };
+
+            HttpResponse::Ok().json(wallet_info)
         }
         Ok(None) => {
             error!("User found in token but not in database: {}", user.id);
@@ -269,6 +285,267 @@ pub async fn get_wallet_info(
                 error: "User profile not found".to_string(),
             })
         }
+        Err(e) => {
+            error!("Failed to fetch user profile: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch your profile. Please try again.".to_string(),
+            })
+        }
+    }
+}
+
+pub async fn get_wallet_setup_status(
+    pool: web::Data<sqlx::PgPool>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    match User::find_by_id(&pool, user.id).await {
+        Ok(Some(user_profile)) => {
+            let mut setup_required = Vec::new();
+            let mut ready_for_payments = true;
+
+            let has_wallet = user_profile.stellar_public_key.is_some();
+            if !has_wallet {
+                setup_required.push("Create Stellar wallet".to_string());
+                ready_for_payments = false;
+            }
+
+            let (has_usdc_trustline, usdc_balance) =
+                if let Some(public_key) = &user_profile.stellar_public_key {
+                    let stellar = match StellarService::new() {
+                        Ok(service) => service,
+                        Err(_) => {
+                            return HttpResponse::InternalServerError().json(ErrorResponse {
+                                error: "Failed to connect to blockchain service".to_string(),
+                            });
+                        }
+                    };
+
+                    let has_trustline = stellar
+                        .has_usdc_trustline(public_key)
+                        .await
+                        .unwrap_or(false);
+                    let balance = if has_trustline {
+                        stellar.get_usdc_balance(public_key).await.ok()
+                    } else {
+                        None
+                    };
+
+                    if !has_trustline {
+                        setup_required.push("Create USDC trustline".to_string());
+                        ready_for_payments = false;
+                    }
+
+                    (has_trustline, balance)
+                } else {
+                    (false, None)
+                };
+
+            let status = WalletSetupStatus {
+                has_wallet,
+                has_usdc_trustline,
+                usdc_balance,
+                setup_required,
+                ready_for_payments,
+            };
+
+            HttpResponse::Ok().json(status)
+        }
+        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
+            error: "User profile not found".to_string(),
+        }),
+        Err(e) => {
+            error!("Failed to fetch user profile: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch your profile. Please try again.".to_string(),
+            })
+        }
+    }
+}
+
+pub async fn create_usdc_trustline(
+    pool: web::Data<sqlx::PgPool>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    match User::find_by_id(&pool, user.id).await {
+        Ok(Some(user_profile)) => {
+            if user_profile.stellar_public_key.is_none() {
+                return HttpResponse::BadRequest().json(ErrorResponse {
+                    error: "User must have a Stellar wallet before creating USDC trustline"
+                        .to_string(),
+                });
+            }
+
+            if user_profile.stellar_secret_key_encrypted.is_none() {
+                return HttpResponse::BadRequest().json(ErrorResponse {
+                    error: "User wallet is incomplete. Please contact support.".to_string(),
+                });
+            }
+
+            let stellar = match StellarService::new() {
+                Ok(service) => service,
+                Err(e) => {
+                    error!("Failed to initialize Stellar service: {}", e);
+                    return HttpResponse::InternalServerError().json(ErrorResponse {
+                        error: "Failed to initialize blockchain service".to_string(),
+                    });
+                }
+            };
+
+            let usdc_issuer = std::env::var("TESTNET_USDC_ISSUER").unwrap_or_else(|_| {
+                "GD34GBHUVW66SULHJMFXEA24G6WBTNV5RNQTZ6CQ7NXFL2XMN53BMMOJ".to_string()
+            });
+
+            let sponsor_manager =
+                match crate::services::sponsor_manager::SponsorManager::new(pool.get_ref().clone())
+                {
+                    Ok(manager) => manager,
+                    Err(e) => {
+                        error!("Failed to initialize sponsor manager: {}", e);
+                        return HttpResponse::InternalServerError().json(ErrorResponse {
+                            error: "Sponsorship service unavailable".to_string(),
+                        });
+                    }
+                };
+
+            let sponsor_info = match sponsor_manager.get_available_sponsor().await {
+                Ok(sponsor) => sponsor,
+                Err(e) => {
+                    error!("Failed to get available sponsor: {}", e);
+                    return HttpResponse::InternalServerError().json(ErrorResponse {
+                        error: "No sponsor accounts available. Please try again later.".to_string(),
+                    });
+                }
+            };
+
+            match stellar
+                .create_asset_trustline(
+                    &user_profile.stellar_secret_key_encrypted.unwrap(),
+                    "USDC",
+                    &usdc_issuer,
+                    Some(&sponsor_info.secret_key),
+                )
+                .await
+            {
+                Ok(tx_hash) => {
+                    info!("USDC trustline created for user {}: {}", user.id, tx_hash);
+                    let gas_fee_xlm = stellar.sponsored_gas_fee();
+
+                    if let Err(e) = sponsor_manager
+                        .record_sponsorship_usage(&sponsor_info.public_key, gas_fee_xlm)
+                        .await
+                    {
+                        warn!("Failed to record sponsor usage: {}", e);
+                    }
+                    HttpResponse::Ok().json(serde_json::json!({
+                        "success": true,
+                        "sponsored": true,
+                        "gas_fee_covered": format!("{:.7} XLM", gas_fee_xlm),
+                        "message": "USDC trustline created successfully",
+                        "transaction_hash": tx_hash,
+                        "next_steps": [
+                            "Your wallet can now receive USDC",
+                            "You can now purchase tickets with USDC",
+                            "Fund your wallet with USDC to start making purchases"
+                        ]
+                    }))
+                }
+                Err(e) => {
+                    error!("Failed to create USDC trustline: {}", e);
+                    HttpResponse::InternalServerError().json(ErrorResponse {
+                        error: format!("Failed to create USDC trustline: {}", e),
+                    })
+                }
+            }
+        }
+        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
+            error: "User profile not found".to_string(),
+        }),
+        Err(e) => {
+            error!("Failed to fetch user profile: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: "Failed to fetch your profile. Please try again.".to_string(),
+            })
+        }
+    }
+}
+
+pub async fn get_funding_instructions(
+    pool: web::Data<sqlx::PgPool>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    match User::find_by_id(&pool, user.id).await {
+        Ok(Some(user_profile)) => {
+            let public_key = match &user_profile.stellar_public_key {
+                Some(key) => key.clone(),
+                None => {
+                    return HttpResponse::BadRequest().json(ErrorResponse {
+                        error: "User must have a Stellar wallet to receive funding instructions"
+                            .to_string(),
+                    });
+                }
+            };
+
+            // Check trustline status
+            let stellar = match StellarService::new() {
+                Ok(service) => service,
+                Err(_) => {
+                    return HttpResponse::InternalServerError().json(ErrorResponse {
+                        error: "Failed to connect to blockchain service".to_string(),
+                    });
+                }
+            };
+
+            let has_trustline = stellar
+                .has_usdc_trustline(&public_key)
+                .await
+                .unwrap_or(false);
+
+            let instructions = if has_trustline {
+                let network_name = match std::env::var("STELLAR_NETWORK")
+                    .unwrap_or_else(|_| "testnet".to_string())
+                    .as_str()
+                {
+                    "mainnet" => "Stellar Mainnet",
+                    _ => "Stellar Testnet",
+                };
+
+                serde_json::json!({
+                "wallet_address": public_key,
+                "currency": "USDC",
+                "network": network_name,
+                "ready_to_receive": true,
+                            "instructions": [
+                                "Your wallet is ready to receive USDC",
+                                "Send USDC to your wallet address above",
+                                "Make sure the sender uses the Stellar network",
+                                "Funds typically arrive within seconds",
+                                "You can then use USDC to purchase event tickets"
+                            ],
+                            "important_notes": [
+                                "Only send USDC on the Stellar network to this address",
+                                "Do not send other cryptocurrencies to this address",
+                                "Always double-check the network before sending"
+                            ]
+                        })
+            } else {
+                serde_json::json!({
+                    "wallet_address": public_key,
+                    "currency": "USDC",
+                    "ready_to_receive": false,
+                    "setup_required": "USDC trustline must be created first",
+                    "instructions": [
+                        "You need to create a USDC trustline before receiving funds",
+                        "Use the 'Create USDC Trustline' endpoint first",
+                        "After trustline creation, you can receive USDC at the address above"
+                    ]
+                })
+            };
+
+            HttpResponse::Ok().json(instructions)
+        }
+        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
+            error: "User profile not found".to_string(),
+        }),
         Err(e) => {
             error!("Failed to fetch user profile: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
@@ -308,7 +585,7 @@ pub async fn generate_wallet(
                         .update_stellar_keys(&pool, &public_key, &secret_key)
                         .await
                     {
-                        Ok(updated_user) => {
+                        Ok(_updated_user) => {
                             info!("Stellar wallet generated for user: {}", user.id);
                             HttpResponse::Ok().json(serde_json::json!({
                                 "message": "Wallet has been generated successfully",
@@ -376,6 +653,35 @@ pub async fn get_user_by_id(
     }
 }
 
+pub async fn send_notification(
+    redis: web::Data<Option<RedisService>>,
+    user: AuthenticatedUser,
+    _data: web::Json<serde_json::Value>,
+) -> impl Responder {
+    // Check rate limit
+    if let Some(redis) = redis.as_ref() {
+        let rate_limit_key = format!("RATE_LIMIT:NOTIFICATIONS:{}", user.id);
+        match redis.check_rate_limit(&rate_limit_key, 10, 3600).await { // 10 per hour
+            Ok(allowed) => {
+                if !allowed {
+                    return HttpResponse::TooManyRequests().json(json!({
+                        "error": "Too many notifications sent. Please try again later."
+                    }));
+                }
+            }
+            Err(e) => {
+                warn!("Rate limit check failed: {}", e);
+                // Continue without rate limiting if Redis is down
+            }
+        }
+    }
+
+    //TODO:put notification logic here...
+    HttpResponse::Ok().json(json!({
+        "message": "Notification sent successfully"
+    }))
+}
+
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/users")
@@ -383,7 +689,9 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/me", web::put().to(update_profile))
             .route("/me/password", web::put().to(update_password))
             .route("/me/wallet", web::get().to(get_wallet_info))
-            .route("/me/wallet", web::post().to(generate_wallet))
+            .route("me/wallet/trustline", web::post().to(create_usdc_trustline))
+            .route("me/wallet/funding", web::get().to(get_funding_instructions))
+            .route("/me/wallet/generate", web::post().to(generate_wallet))
             .route("/test-auth", web::get().to(test_auth))
             .route("/simple-test", web::get().to(simple_test))
             .route("/{user_id}", web::get().to(get_user_by_id)),

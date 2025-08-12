@@ -4,6 +4,7 @@ pub mod event;
 pub mod ticket;
 pub mod transaction;
 pub mod user;
+pub mod admin;
 
 use actix_web::web;
 
@@ -16,6 +17,6 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
             .configure(event::configure)
             .configure(transaction::configure)
             .configure(user::configure)
-            // .configure(admin_filters::configure)
+            .configure(admin::configure)
     );
 }

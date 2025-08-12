@@ -9,43 +9,65 @@ use actix_web::{
 };
 use actix_cors::Cors;
 use actix_governor::{Governor, GovernorConfigBuilder};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{postgres::PgPoolOptions};
 use dotenv::dotenv;
-use std::{env, time::Duration};
+use std::{env, time::Duration,};
 use log::{info, error, warn};
 use serde_json::json;
 
 use crate::services::scheduler::SchedulerService;
+use crate::services::sponsor_manager::SponsorManager;
+use crate::services::RedisService;
 
 use blocstage::controllers::configure_routes;
 use blocstage::api_info;
 
-async fn health_check() -> impl Responder {
-    HttpResponse::Ok().json(json!({
+async fn health_check(redis: web::Data<Option<RedisService>>) -> impl Responder {
+    let mut health_status = json!({
         "status": "healthy",
         "service": "blocstage-api",
-        "timestamp": chrono::Utc::now().to_rfc3339()
-    }))
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "components": {
+            "database": "healthy"
+        }
+    });
+
+    if let Some(redis) = redis.as_ref() {
+        match redis.health_check().await {
+            Ok(redis_health) => {
+                health_status["components"]["redis"] = json!({
+                    "status": redis_health.status,
+                    "latency_ms": redis_health.latency_ms
+                });
+            }
+            Err(_) => {
+                health_status["components"]["redis"] = json!({
+                    "status": "unhealthy"
+                });
+                health_status["status"] = json!("degraded");
+            }
+        }
+    } else {
+        health_status["components"]["redis"] = json!({
+            "status": "disabled",
+            "message": "Redis not configured"
+        });
+    }
+
+    if let Ok(email_service) = crate::services::email::EmailService::new().await {
+        let email_health = match email_service.health_check().await {
+            Ok(true) => "healthy",
+            Ok(false) => "unhealthy",
+            Err(_) => "error",
+        };
+        health_status["checks"]["email"] = serde_json::json!({
+            "status": email_health,
+            "provider": email_service.provider_name()
+        });
+    }
+
+    HttpResponse::Ok().json(health_status)
 }
-// Moved this to lib.rs
-// // API info endpoint. TODO: this will be moved to the /api scope
-// pub async fn api_info() -> impl Responder {
-//     HttpResponse::Ok().json(json!({
-//         "name": "BlocStage Ticketing API",
-//         "version": env!("CARGO_PKG_VERSION"),
-//         "description": "Decentralized ticketing platform on Stellar",
-//         "endpoints": {
-//             "health": "/health",
-//             "api_docs": "/api",
-//             "auth": "/api/auth/*",
-//             "events": "/api/events/*",
-//             "tickets": "/api/tickets/*",
-//             "users": "/api/users/*",
-//             "transactions": "/api/transactions/*",
-//             "admin": "/api/admin/*"
-//         }
-//     }))
-// }
 
 // 404 handler for undefined routes
 async fn not_found() -> impl Responder {
@@ -87,11 +109,44 @@ async fn main() -> std::io::Result<()> {
         .connect(&database_url)
         .await
         .expect("Failed to create database pool");
+
+
+    let redis_service: Option<RedisService> = match RedisService::new().await {
+        Ok(redis) => {
+            info!("✅ Redis connection established");
+            
+            // Test Redis connection
+            match redis.ping().await {
+                Ok(pong) => info!("🏓 Redis ping successful: {}", pong),
+                Err(e) => warn!("⚠️ Redis ping failed: {}", e),
+            }
+            
+            Some(redis)
+        }
+        Err(e) => {
+            warn!("⚠️ Redis connection failed: {}", e);
+            warn!("🚀 Application will continue without Redis caching");
+            None
+        }
+    };
+
     
     match sqlx::query("SELECT 1").fetch_one(&db_pool).await {
         Ok(_) => info!("Database connection successful"),
         Err(e) => {
             error!("Database connection failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    info!("🏦 Initializing sponsor accounts...");
+    match initialize_sponsor_system(&db_pool).await {
+        Ok(sponsor_count) => {
+            info!("✅ {} sponsor accounts initialized and validated", sponsor_count);
+        }
+        Err(e) => {
+            error!("❌ Failed to initialize sponsor system: {}", e);
+            error!("💡 Please check your sponsor account configuration");
             std::process::exit(1);
         }
     }
@@ -145,10 +200,12 @@ async fn main() -> std::io::Result<()> {
         
         App::new()
             .app_data(web::Data::new(db_pool.clone()))
+            .app_data(web::Data::new(redis_service.clone()))
+
             
             // JSON payload limits (10MB max)
             .app_data(web::JsonConfig::default()
-                .limit(10 * 1024 * 1024) // 10MB
+                .limit(10 * 1024 * 1024)
                 .error_handler(|err, _req| {
                     error!("JSON payload error: {}", err);
                     actix_web::error::InternalError::from_response(
@@ -161,7 +218,7 @@ async fn main() -> std::io::Result<()> {
                 })
             )
             
-            // form data limits
+            // data limits
             .app_data(web::FormConfig::default()
                 .limit(5 * 1024 * 1024) // 5MB
                 .error_handler(|err, _req| {
@@ -176,15 +233,14 @@ async fn main() -> std::io::Result<()> {
                 })
             )
             
-            // Security and performance middleware
             .wrap(cors)
             .wrap(Governor::new(&governor_conf)) // Rate limit
-            .wrap(Compress::default()) // Response compression
+            .wrap(Compress::default())
             .wrap(Logger::new(
                 r#"%a "%r" %s %b "%{Referer}i" "%{User-Agent}i" %T"#
             ))
             
-            // Security headers
+            // Security
             .wrap(DefaultHeaders::new()
                 .add(("X-Content-Type-Options", "nosniff"))
                 .add(("X-Frame-Options", "DENY"))
@@ -196,13 +252,10 @@ async fn main() -> std::io::Result<()> {
                 .add(("Permissions-Policy", "geolocation=(), microphone=(), camera=()"))
             )
             
-            // System endpoints
             .route("/health", web::get().to(health_check))
             
-            // API routes (includes /api root now)
             .configure(configure_routes)
             
-            // 404 handler for all other routes
             .default_service(web::route().to(not_found))
     })
     .bind(format!("{}:{}", server_host, server_port))?
@@ -212,70 +265,162 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
+async fn initialize_sponsor_system(pool: &sqlx::PgPool) -> Result<usize, Box<dyn std::error::Error>> {
+    let sponsor_manager = SponsorManager::new(pool.clone())?;
+    
+    let existing_sponsors = sponsor_manager.get_sponsor_statistics().await?;
+    
+    if existing_sponsors.is_empty() {
+        info!("📋 No sponsors found in database, attempting migration from environment variables");
+        
+        match sponsor_manager.initialize_sponsor_accounts().await {
+            Ok(_) => {
+                info!("✅ Successfully migrated sponsor accounts from environment to database");
+            }
+            Err(e) => {
+                warn!("⚠️  Failed to migrate sponsors from environment: {}", e);
+                warn!("💡 You may need to add sponsor accounts manually via the admin API");
+                warn!("💡 System will continue but sponsored payments may not work until sponsors are added");
+                
+                // Don't exit. Allow system to start without sponsors for admin setup
+                return Ok(0);
+            }
+        }
+    } else {
+        info!("📋 Found {} existing sponsor accounts in database", existing_sponsors.len());
+        
+        if let Err(e) = sponsor_manager.update_all_balances().await {
+            warn!("⚠️  Failed to refresh sponsor balances: {}", e);
+        }
+    }
+    
+    let sponsor_stats = sponsor_manager.get_sponsor_statistics().await?;
+    let active_sponsors = sponsor_stats.iter().filter(|s| s.is_active).count();
+    
+    if active_sponsors == 0 {
+        warn!("⚠️  No active sponsor accounts available for fee sponsorship");
+        warn!("💡 Please add or reactivate sponsor accounts via the admin API");
+        warn!("💡 Sponsored payments will fail until at least one sponsor is active");
+    } else {
+        info!("✅ {} active sponsor accounts available for fee sponsorship", active_sponsors);
+    }
+
+    info!("📊 Sponsor Account Summary:");
+    for account in &sponsor_stats {
+        let balance_info = if let Some(balance) = &account.current_balance {
+            format!("{} XLM", balance)
+        } else {
+            "Balance unknown".to_string()
+        };
+        
+        let status = if account.is_active { "✅ Active" } else { "❌ Inactive" };
+        let key_status = if account.encrypted_secret_key.is_some() { "🔐 Encrypted" } else { "❌ No Key" };
+        
+        info!("   {} - {} - {} - Sponsored: {} txs", 
+            account.account_name, 
+            status,
+            key_status,
+            account.transactions_sponsored.unwrap_or(0));
+        info!("     Balance: {} | Public Key: {}", balance_info, account.public_key);
+    }
+
+    Ok(sponsor_stats.len())
+}
+
 fn validate_environment_variables() {
-    let required_vars = [
+    let important_vars = [
         "DATABASE_URL",
         "JWT_SECRET",
         "STELLAR_NETWORK",
         "MASTER_ENCRYPTION_KEY",
+        "PLATFORM_PAYMENT_PUBLIC_KEY",
+        "SPONSORSHIP_FEE_ACCOUNT_PUBLIC",
+        "TESTNET_USDC_ISSUER",
+        "PLATFORM_FEE_PERCENTAGE",
+        "TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE",
+        "GAS_FEE_MARGIN_PERCENTAGE",
+        "SPONSOR_MINIMUM_BALANCE",
+        "SPONSOR_LOW_BALANCE_ALERT_THRESHOLD",
     ];
-    
-    let optional_vars = [
-        "SERVER_HOST",
-        "SERVER_PORT", 
-        "CORS_ALLOWED_ORIGINS",
-        "SMTP_SERVER",
-        "SMTP_USERNAME", 
-        "SMTP_PASSWORD",
-        "EMAIL_FROM",
-        "APP_URL",
-        "PLATFORM_WALLET_PUBLIC_KEY",
-        "PLATFORM_PAYMENT_SECRET",
-        "NFT_ISSUER_PUBLIC_KEY",
-        "NFT_ISSUER_SECRET_KEY",
-        "S3_BUCKET_NAME",
-        "S3_BASE_URL",
-        "LOCAL_STORAGE_DIR",
-    ];
-    
-    let mut missing_required = Vec::new();
-    for var in required_vars.iter() {
+
+    // Check important variables
+    let mut missing_important = Vec::new();
+    for var in important_vars.iter() {
         if env::var(var).is_err() {
-            missing_required.push(*var);
+            missing_important.push(*var);
         }
     }
-    
-    if !missing_required.is_empty() {
-        error!("Missing required environment variables: {}", missing_required.join(", "));
-        error!("Please set these variables in your .env file or environment");
+
+    if !missing_important.is_empty() {
+        error!("❌ Missing important environment variables:");
+        for var in &missing_important {
+            error!("   - {}", var);
+        }
+        error!("💡 Please set these variables in your .env file");
         std::process::exit(1);
     }
-    
-    let mut missing_optional = Vec::new();
-    for var in optional_vars.iter() {
-        if env::var(var).is_err() {
-            missing_optional.push(*var);
+
+    // Validate percentage values
+    if let Ok(platform_fee) = env::var("PLATFORM_FEE_PERCENTAGE") {
+        match platform_fee.parse::<f64>() {
+            Ok(fee) if fee < 0.0 || fee > 50.0 => {
+                error!("❌ PLATFORM_FEE_PERCENTAGE must be between 0 and 50");
+                std::process::exit(1);
+            }
+            Err(_) => {
+                error!("❌ PLATFORM_FEE_PERCENTAGE must be a valid number");
+                std::process::exit(1);
+            }
+            _ => {}
         }
     }
-    
-    if !missing_optional.is_empty() {
-        warn!("Optional environment variables not set: {}", missing_optional.join(", "));
-        warn!("Some features may not work without these variables");
+
+    if let Ok(sponsorship_fee) = env::var("TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE") {
+        match sponsorship_fee.parse::<f64>() {
+            Ok(fee) if fee < 0.0 || fee > 50.0 => {
+                error!("❌ TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE must be between 0 and 50");
+                std::process::exit(1);
+            }
+            Err(_) => {
+                error!("❌ TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE must be a valid number");
+                std::process::exit(1);
+            }
+            _ => {}
+        }
     }
+
+    // Validate Stellar public keys format
+    let public_key_vars = ["PLATFORM_PAYMENT_PUBLIC_KEY", "SPONSORSHIP_FEE_ACCOUNT_PUBLIC"];
+    for var in public_key_vars.iter() {
+        if let Ok(key) = env::var(var) {
+            if !key.starts_with('G') || key.len() != 56 {
+                error!("❌ {} must be a valid Stellar public key (starts with G, 56 characters)", var);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // TODO: Validate sponsor secret keys
     
-    if let Ok(jwt_secret) = env::var("JWT_SECRET") {
-        if jwt_secret.len() < 32 {
-            error!("JWT_SECRET must be at least 32 characters long for security");
+    // Validate network configuration
+    if let Ok(network) = env::var("STELLAR_NETWORK") {
+        if network != "testnet" && network != "mainnet" {
+            error!("❌ STELLAR_NETWORK must be either 'testnet' or 'mainnet'");
             std::process::exit(1);
         }
-    }
-    
-    if let Ok(master_key) = env::var("MASTER_ENCRYPTION_KEY") {
-        if master_key.len() != 64 {
-            error!("MASTER_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)");
-            std::process::exit(1);
+        
+        if network == "mainnet" {
+            warn!("⚠️  Running on Stellar MAINNET - real money will be involved!");
+        } else {
+            info!("🧪 Running on Stellar TESTNET - safe for development");
         }
     }
-    
-    info!("Environment validation completed successfully");
+
+    // Display configuration summary
+    info!("📋 Configuration Summary:");
+    info!("   Platform Fee: {}%", env::var("PLATFORM_FEE_PERCENTAGE").unwrap_or_else(|_| "5.0".to_string()));
+    info!("   Sponsorship Fee: {}%", env::var("TRANSACTION_SPONSORSHIP_FEE_PERCENTAGE").unwrap_or_else(|_| "2.5".to_string()));
+    info!("   Gas Margin: {}%", env::var("GAS_FEE_MARGIN_PERCENTAGE").unwrap_or_else(|_| "20".to_string()));
+    info!("   Sponsor Min Balance: {} XLM", env::var("SPONSOR_MINIMUM_BALANCE").unwrap_or_else(|_| "200".to_string()));
+    info!("   Network: {}", env::var("STELLAR_NETWORK").unwrap_or_else(|_| "testnet".to_string()));
 }

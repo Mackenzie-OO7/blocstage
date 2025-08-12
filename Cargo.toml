@@ -45,6 +45,12 @@ uuid = { version = "1.16.0", features = ["v4", "serde"] }
 stellar-horizon = "0.7.1"
 soroban-client = "0.4.8"
 stellar-xdr = "22.2.0"
+redis = { version = "0.32.4", features = ["aio", "tokio-comp", "connection-manager"] }
+handlebars = "6.0"
+deadpool-redis = "0.22.0"
+async-trait = "0.1.88"
+actix-multipart = "0.7.2"
+futures-util = "0.3.31"
 
 [dev-dependencies]
 tokio-test = "0.4"

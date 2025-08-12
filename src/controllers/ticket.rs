@@ -1,17 +1,17 @@
+use crate::controllers::admin_filters::{
+    AdminTicketFilters, AdminTicketView, PageInfo,
+    PaginatedTicketsResponse,
+};
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::event::Event;
 use crate::models::ticket::CheckInRequest;
 use crate::models::ticket_type::{CreateTicketTypeRequest, TicketType};
 use crate::services::ticket::TicketService;
-use crate::controllers::admin_filters::{
-    AdminTicketFilters, PaginatedTicketsResponse, 
-    PaginatedEventsResponse, AdminTicketView, PageInfo
-};
 use actix_web::{web, HttpResponse, Responder};
 use anyhow::Result;
 use bigdecimal::BigDecimal;
-use chrono::{DateTime, Utc};
-use log::{error, info, warn};
+use chrono::{Utc};
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
@@ -96,8 +96,7 @@ pub async fn create_ticket_type(
                 ),
             });
         }
-        "scheduled" | "active" => {
-        }
+        "scheduled" | "active" => {}
         _ => {
             return HttpResponse::BadRequest().json(ErrorResponse {
                 error: "Event is not in a valid state for creating ticket types".to_string(),
@@ -110,7 +109,8 @@ pub async fn create_ticket_type(
     let time_until_event = updated_event.start_time - now;
     if time_until_event < chrono::Duration::hours(1) {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Cannot create a new ticket less than 1 hour before the event starts".to_string(),
+            error: "Cannot create a new ticket less than 1 hour before the event starts"
+                .to_string(),
         });
     }
 
@@ -124,7 +124,7 @@ pub async fn create_ticket_type(
         }
         Err(e) => {
             error!("Failed to create ticket type: {}", e);
-            
+
             let error_message = if e.to_string().contains("Price is required") {
                 "Price is required for paid tickets"
             } else if e.to_string().contains("Currency is required") {
@@ -203,7 +203,6 @@ pub async fn update_ticket_type_status(
 }
 
 // TICKET PURCHASING
-
 pub async fn claim_free_ticket(
     pool: web::Data<PgPool>,
     ticket_type_id: web::Path<Uuid>,
@@ -211,7 +210,10 @@ pub async fn claim_free_ticket(
 ) -> impl Responder {
     match TicketService::new(pool.get_ref().clone()).await {
         Ok(ticket_service) => {
-            match ticket_service.claim_free_ticket(*ticket_type_id, user.id).await {
+            match ticket_service
+                .claim_free_ticket(*ticket_type_id, user.id)
+                .await
+            {
                 Ok(ticket) => {
                     info!(
                         "Free ticket claimed successfully: ticket_id={}, user_id={}",
@@ -225,7 +227,7 @@ pub async fn claim_free_ticket(
                 }
                 Err(e) => {
                     error!("Failed to claim free ticket: {}", e);
-                    
+
                     let error_message = if e.to_string().contains("not free") {
                         "This ticket type is not free. Use the purchase endpoint instead."
                     } else if e.to_string().contains("already ended") {
@@ -262,7 +264,10 @@ pub async fn purchase_ticket(
 ) -> impl Responder {
     match TicketService::new(pool.get_ref().clone()).await {
         Ok(ticket_service) => {
-            match ticket_service.purchase_ticket(*ticket_type_id, user.id).await {
+            match ticket_service
+                .purchase_ticket(*ticket_type_id, user.id)
+                .await
+            {
                 Ok((ticket, transaction)) => {
                     info!(
                         "Paid ticket purchased successfully: ticket_id={}, user_id={}, transaction_id={}",
@@ -277,7 +282,7 @@ pub async fn purchase_ticket(
                 }
                 Err(e) => {
                     error!("Failed to purchase ticket: {}", e);
-                    
+
                     let error_message = if e.to_string().contains("is free") {
                         "This ticket type is free. Use the claim endpoint instead."
                     } else if e.to_string().contains("Stellar wallet") {
@@ -308,7 +313,6 @@ pub async fn purchase_ticket(
 }
 
 // TICKET VERIFICATION
-
 pub async fn verify_ticket(pool: web::Data<PgPool>, ticket_id: web::Path<Uuid>) -> impl Responder {
     match create_ticket(&pool).await {
         Ok(ticket) => match ticket.verify_ticket(*ticket_id).await {
@@ -344,7 +348,6 @@ pub async fn check_in_ticket(
     data: web::Json<CheckInRequest>,
     user: AuthenticatedUser,
 ) -> impl Responder {
-    // the check-in user has to be verified by say a staff member
     let _verified_user = match crate::middleware::auth::require_verified_user(&pool, user.id).await
     {
         Ok(user) => user,
@@ -388,7 +391,6 @@ pub async fn check_in_ticket(
 }
 
 // TICKET MANAGEMENT
-
 pub async fn generate_pdf_ticket(
     pool: web::Data<PgPool>,
     ticket_id: web::Path<Uuid>,
@@ -402,7 +404,6 @@ pub async fn generate_pdf_ticket(
                 });
             }
 
-            // PDF generation
             match create_ticket(&pool).await {
                 Ok(ticket) => match ticket.generate_pdf_ticket(*ticket_id).await {
                     Ok(pdf_url) => {
@@ -416,68 +417,6 @@ pub async fn generate_pdf_ticket(
                         error!("Failed to generate PDF ticket: {}", e);
                         HttpResponse::InternalServerError().json(ErrorResponse {
                             error: "Failed to generate PDF ticket. Please try again.".to_string(),
-                        })
-                    }
-                },
-                Err(e) => {
-                    error!("Failed to initialize ticket service: {}", e);
-                    HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Internal server error".to_string(),
-                    })
-                }
-            }
-        }
-        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "Ticket not found".to_string(),
-        }),
-        Err(e) => {
-            error!("Failed to fetch ticket: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to verify ticket ownership. Please try again.".to_string(),
-            })
-        }
-    }
-}
-
-pub async fn convert_to_nft(
-    pool: web::Data<PgPool>,
-    ticket_id: web::Path<Uuid>,
-    user: AuthenticatedUser,
-) -> impl Responder {
-    match crate::models::ticket::Ticket::find_by_id(&pool, *ticket_id).await {
-        Ok(Some(ticket)) => {
-            if ticket.owner_id != user.id {
-                return HttpResponse::Forbidden().json(ErrorResponse {
-                    error: "You don't have permission to convert this ticket".to_string(),
-                });
-            }
-
-            // NFT conversion
-            match create_ticket(&pool).await {
-                Ok(ticket) => match ticket.convert_to_nft(*ticket_id).await {
-                    Ok(ticket) => {
-                        info!(
-                            "Ticket converted to NFT: {} for user {}",
-                            ticket_id, user.id
-                        );
-                        HttpResponse::Ok().json(serde_json::json!({
-                            "ticket": ticket,
-                            "message": "Ticket has been successfully converted to an NFT"
-                        }))
-                    }
-                    Err(e) => {
-                        error!("Failed to convert ticket to NFT: {}", e);
-
-                        let error_message = if e.to_string().contains("already an NFT") {
-                            "This ticket is already an NFT."
-                        } else if e.to_string().contains("Only valid tickets") {
-                            "Only valid tickets can be converted to NFTs."
-                        } else {
-                            "Failed to convert ticket to NFT. Please try again."
-                        };
-
-                        HttpResponse::BadRequest().json(ErrorResponse {
-                            error: error_message.to_string(),
                         })
                     }
                 },
@@ -552,44 +491,6 @@ pub async fn transfer_ticket(
     }
 }
 
-// pub async fn cancel_ticket(
-//     pool: web::Data<PgPool>,
-//     ticket_id: web::Path<Uuid>,
-//     user: AuthenticatedUser,
-// ) -> impl Responder {
-//     match create_ticket(&pool).await {
-//         Ok(ticket) => match ticket.cancel_ticket(*ticket_id, user.id).await {
-//             Ok(_) => {
-//                 info!("Ticket cancelled: {} by user {}", ticket_id, user.id);
-//                 HttpResponse::Ok().json(serde_json::json!({
-//                         "message": "Ticket has been successfully cancelled and refund has been processed"
-//                     }))
-//             }
-//             Err(e) => {
-//                 error!("Failed to cancel ticket: {}", e);
-
-//                 let error_message = if e.to_string().contains("You don't own this ticket") {
-//                     "You don't own this ticket."
-//                 } else if e.to_string().contains("Ticket cannot be cancelled") {
-//                     "This ticket cannot be cancelled."
-//                 } else {
-//                     "Failed to cancel ticket. Please try again."
-//                 };
-
-//                 HttpResponse::BadRequest().json(ErrorResponse {
-//                     error: error_message.to_string(),
-//                 })
-//             }
-//         },
-//         Err(e) => {
-//             error!("Failed to initialize ticket service: {}", e);
-//             HttpResponse::InternalServerError().json(ErrorResponse {
-//                 error: "Internal server error".to_string(),
-//             })
-//         }
-//     }
-// }
-
 pub async fn get_user_tickets(pool: web::Data<PgPool>, user: AuthenticatedUser) -> impl Responder {
     match create_ticket(&pool).await {
         Ok(ticket) => match ticket.get_user_tickets(user.id).await {
@@ -611,7 +512,6 @@ pub async fn get_user_tickets(pool: web::Data<PgPool>, user: AuthenticatedUser) 
 }
 
 // ADMIN ENDPOINTS
-
 pub async fn admin_get_all_tickets(
     pool: web::Data<PgPool>,
     query: web::Query<AdminTicketFilters>,
@@ -628,7 +528,7 @@ pub async fn admin_get_all_tickets(
     match get_filtered_tickets(&pool, &filters).await {
         Ok(response) => {
             info!(
-                "Admin {} accessed filtered tickets (total: {}, page: {})", 
+                "Admin {} accessed filtered tickets (total: {}, page: {})",
                 user.id, response.total_count, response.page_info.current_page
             );
             HttpResponse::Ok().json(response)
@@ -643,12 +543,12 @@ pub async fn admin_get_all_tickets(
 }
 
 async fn get_filtered_tickets(
-    pool: &PgPool, 
-    filters: &AdminTicketFilters
+    pool: &PgPool,
+    filters: &AdminTicketFilters,
 ) -> Result<PaginatedTicketsResponse, sqlx::Error> {
     let limit = filters.limit.unwrap();
     let offset = filters.offset.unwrap();
-    
+
     let base_query = r#"
         SELECT 
             t.id as ticket_id,
@@ -681,7 +581,10 @@ async fn get_filtered_tickets(
         LEFT JOIN transactions tr ON t.id = tr.ticket_id
     "#;
 
-    let search_pattern = filters.search.as_ref().map(|search| format!("%{}%", search));
+    let search_pattern = filters
+        .search
+        .as_ref()
+        .map(|search| format!("%{}%", search));
 
     let mut where_conditions = Vec::new();
     let mut param_count = 1;
@@ -690,22 +593,22 @@ async fn get_filtered_tickets(
         where_conditions.push(format!("t.status = ${}", param_count));
         param_count += 1;
     }
-    
+
     if filters.event_id.is_some() {
         where_conditions.push(format!("e.id = ${}", param_count));
         param_count += 1;
     }
-    
+
     if filters.user_id.is_some() {
         where_conditions.push(format!("u.id = ${}", param_count));
         param_count += 1;
     }
-    
+
     if filters.is_free.is_some() {
         where_conditions.push(format!("tt.is_free = ${}", param_count));
         param_count += 1;
     }
-    
+
     if filters.search.is_some() {
         where_conditions.push(format!(
             "(e.title ILIKE ${} OR u.email ILIKE ${} OR tt.name ILIKE ${})",
@@ -734,22 +637,27 @@ async fn get_filtered_tickets(
     } else {
         format!("WHERE {}", where_conditions.join(" AND "))
     };
-    
+
     let sort_column = match filters.sort_by.as_ref().unwrap().as_str() {
         "event_start" => "e.start_time",
-        "amount" => "tr.amount", 
+        "amount" => "tr.amount",
         "updated_at" => "t.updated_at",
         "owner_email" => "u.email",
         "ticket_type" => "tt.name",
         "status" => "t.status",
         _ => "t.created_at",
     };
-    
+
     let sort_order = filters.sort_order.as_ref().unwrap();
-    
+
     let final_query = format!(
         "{} {} ORDER BY {} {} LIMIT ${} OFFSET ${}",
-        base_query, where_clause, sort_column, sort_order, param_count, param_count + 1
+        base_query,
+        where_clause,
+        sort_column,
+        sort_order,
+        param_count,
+        param_count + 1
     );
 
     let count_query = format!(
@@ -768,22 +676,22 @@ async fn get_filtered_tickets(
         main_query = main_query.bind(status);
         count_query_builder = count_query_builder.bind(status);
     }
-    
+
     if let Some(event_id) = &filters.event_id {
         main_query = main_query.bind(event_id);
         count_query_builder = count_query_builder.bind(event_id);
     }
-    
+
     if let Some(user_id) = &filters.user_id {
         main_query = main_query.bind(user_id);
         count_query_builder = count_query_builder.bind(user_id);
     }
-    
+
     if let Some(is_free) = &filters.is_free {
         main_query = main_query.bind(is_free);
         count_query_builder = count_query_builder.bind(is_free);
     }
-    
+
     if let Some(_) = &filters.search {
         if let Some(pattern) = &search_pattern {
             main_query = main_query.bind(pattern);
@@ -818,24 +726,28 @@ async fn get_filtered_tickets(
             ticket_status: row.get("ticket_status"),
             created_at: row.get("ticket_created_at"),
             updated_at: row.get("ticket_updated_at"),
-            
+
             event_id: row.get("event_id"),
             event_title: row.get("event_title"),
             event_start_time: row.get("event_start_time"),
             event_status: row.get("event_status"),
-            
+
             ticket_type_name: row.get("ticket_type_name"),
             is_free: row.get("is_free"),
-            price: row.get::<Option<BigDecimal>, _>("price").map(|p| p.to_string()),
+            price: row
+                .get::<Option<BigDecimal>, _>("price")
+                .map(|p| p.to_string()),
             currency: row.get("currency"),
-            
+
             owner_id: row.get("owner_id"),
             owner_email: row.get("owner_email"),
             owner_username: row.get("owner_username"),
-            
+
             transaction_id: row.get("transaction_id"),
             transaction_status: row.get("transaction_status"),
-            amount_paid: row.get::<Option<BigDecimal>, _>("amount_paid").map(|a| a.to_string()),
+            amount_paid: row
+                .get::<Option<BigDecimal>, _>("amount_paid")
+                .map(|a| a.to_string()),
         });
     }
 
@@ -890,7 +802,7 @@ pub async fn admin_cancel_any_ticket(
                 }
                 Err(e) => {
                     error!("Admin ticket cancellation failed: {}", e);
-                    
+
                     let error_message = if e.to_string().contains("not found") {
                         "Ticket not found"
                     } else if e.to_string().contains("cannot be cancelled") {
@@ -914,8 +826,6 @@ pub async fn admin_cancel_any_ticket(
     }
 }
 
-// ============ ROUTE CONFIGURATION ============
-
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
         web::scope("/events/{event_id}/tickets")
@@ -929,12 +839,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/{ticket_id}/generate-pdf",
                 web::post().to(generate_pdf_ticket),
             )
-            .route(
-                "/{ticket_id}/convert-to-nft",
-                web::post().to(convert_to_nft),
-            )
-            .route("/{ticket_id}/transfer", web::post().to(transfer_ticket))
-            // .route("/{ticket_id}/cancel", web::post().to(cancel_ticket)),
+            .route("/{ticket_id}/transfer", web::post().to(transfer_ticket)),
     )
     .service(
         web::scope("/ticket-types")
@@ -942,10 +847,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                 "/{ticket_type_id}/purchase",
                 web::post().to(purchase_ticket),
             )
-            .route(
-                "/{ticket_type_id}/claim",
-                web::post().to(claim_free_ticket),
-            )
+            .route("/{ticket_type_id}/claim", web::post().to(claim_free_ticket))
             .route(
                 "/{ticket_type_id}/{is_active}",
                 web::put().to(update_ticket_type_status),
