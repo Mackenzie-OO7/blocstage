@@ -585,7 +585,7 @@ pub async fn generate_wallet(
                         .update_stellar_keys(&pool, &public_key, &secret_key)
                         .await
                     {
-                        Ok(updated_user) => {
+                        Ok(_updated_user) => {
                             info!("Stellar wallet generated for user: {}", user.id);
                             HttpResponse::Ok().json(serde_json::json!({
                                 "message": "Wallet has been generated successfully",
@@ -656,7 +656,7 @@ pub async fn get_user_by_id(
 pub async fn send_notification(
     redis: web::Data<Option<RedisService>>,
     user: AuthenticatedUser,
-    data: web::Json<serde_json::Value>,
+    _data: web::Json<serde_json::Value>,
 ) -> impl Responder {
     // Check rate limit
     if let Some(redis) = redis.as_ref() {

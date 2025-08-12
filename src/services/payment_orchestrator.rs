@@ -43,7 +43,7 @@ pub struct PaymentOrchestrator {
     stellar: StellarService,
     sponsor_manager: SponsorManager,
     fee_calculator: FeeCalculator,
-    crypto_service: KeyEncryption,
+    _crypto_service: KeyEncryption,
 }
 
 impl PaymentOrchestrator {
@@ -52,14 +52,14 @@ impl PaymentOrchestrator {
         sponsor_manager: SponsorManager,
         fee_calculator: FeeCalculator,
     ) -> Result<Self> {
-        let crypto_service = KeyEncryption::new()
+        let _crypto_service = KeyEncryption::new()
             .map_err(|e| anyhow!("Failed to initialize crypto service: {}", e))?;
 
         Ok(Self {
             stellar,
             sponsor_manager,
             fee_calculator,
-            crypto_service,
+            _crypto_service,
         })
     }
 

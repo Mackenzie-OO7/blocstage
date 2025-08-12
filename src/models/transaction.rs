@@ -270,7 +270,7 @@ impl Transaction {
         Ok(transactions)
     }
 
-    pub async fn get_with_fee_breakdown(&self, pool: &PgPool) -> Result<TransactionWithFeeBreakdown> {
+    pub async fn get_with_fee_breakdown(&self, _pool: &PgPool) -> Result<TransactionWithFeeBreakdown> {
         let ticket_price = if let Some(sponsorship_fee) = &self.transaction_sponsorship_fee {
             &self.amount - sponsorship_fee
         } else {
