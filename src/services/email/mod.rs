@@ -91,7 +91,7 @@ impl EmailService {
             subject: "Verify Your BlocStage Account".to_string(),
             html_body,
             text_body: Some(text_body),
-            from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "noreply@blocstage.com".to_string()),
+            from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "no-reply@blocstage.com".to_string()),
             from_name: Some("BlocStage".to_string()),
         };
 
@@ -125,7 +125,7 @@ impl EmailService {
             subject: "Reset Your BlocStage Password".to_string(),
             html_body,
             text_body: Some(text_body),
-            from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "noreply@blocstage.com".to_string()),
+            from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "no-reply@blocstage.com".to_string()),
             from_name: Some("BlocStage".to_string()),
         };
 
@@ -152,7 +152,7 @@ impl EmailService {
             subject: "Password Changed - BlocStage".to_string(),
             html_body,
             text_body: Some(text_body),
-            from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "noreply@blocstage.com".to_string()),
+            from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "no-reply@blocstage.com".to_string()),
             from_name: Some("BlocStage".to_string()),
         };
 
@@ -179,7 +179,7 @@ impl EmailService {
             subject: "Account Deleted - BlocStage".to_string(),
             html_body,
             text_body: Some(text_body),
-            from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "noreply@blocstage.com".to_string()),
+            from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "no-reply@blocstage.com".to_string()),
             from_name: Some("BlocStage".to_string()),
         };
 

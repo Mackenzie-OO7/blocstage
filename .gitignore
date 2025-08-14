@@ -1,4 +1,5 @@
 /target
-.env
 reset_database.sh
-.env.test
+.shuttle*
+.env
+Secrets*.toml
