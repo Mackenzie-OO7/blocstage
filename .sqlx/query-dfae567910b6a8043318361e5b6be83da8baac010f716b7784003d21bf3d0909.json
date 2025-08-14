@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE sponsor_accounts \n            SET is_active = true, updated_at = NOW()\n            WHERE id = $1\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "account_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "public_key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "minimum_balance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 5,
+        "name": "current_balance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_balance_check",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "transactions_sponsored",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "encrypted_secret_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_by",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "dfae567910b6a8043318361e5b6be83da8baac010f716b7784003d21bf3d0909"
+}

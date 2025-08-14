@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "ALTER TABLE transactions ADD COLUMN transaction_sponsorship_fee DECIMAL(19, 8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "6d7a169f3dd0dd8ec6f9bdbe87c434f1ca76e10afaec2f0a4f4452f9f426b741"
+}

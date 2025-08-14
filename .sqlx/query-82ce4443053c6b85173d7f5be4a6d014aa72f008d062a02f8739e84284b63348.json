@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT public_key FROM sponsor_accounts WHERE is_active = true",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "public_key",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "82ce4443053c6b85173d7f5be4a6d014aa72f008d062a02f8739e84284b63348"
+}

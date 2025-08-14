@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM events \n            WHERE status = 'cancelled' \n            AND updated_at < NOW() - INTERVAL '30 days'\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "bc030e992ea0e579372993bedcaf247a49e48c6a2d91764187bc566c02dbc1c6"
+}

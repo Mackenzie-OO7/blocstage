@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE sponsor_accounts \n            SET is_active = false, updated_at = NOW()\n            WHERE public_key = $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d4920f7e51685b7d2c63fa7d733fa949d4c64930386b88c6f5280e087e3f4093"
+}

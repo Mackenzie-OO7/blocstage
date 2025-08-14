@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT COUNT(*) as count\n                FROM tickets t\n                JOIN transactions tr ON t.id = tr.ticket_id\n                WHERE t.ticket_type_id = $1 AND tr.status = 'completed'\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "1cf88fe9afd420e6eefa1e67914f219441a2cf9ec995b76a6da9c867072aa8e9"
+}

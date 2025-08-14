@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE ticket_types \n                SET remaining = remaining + 1, updated_at = $1 \n                WHERE id = $2\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "90477ac970286d212c3413ddef81017ecd86e77871ec4796752ec8d6368c673a"
+}

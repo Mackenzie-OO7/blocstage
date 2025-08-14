@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT t.id\n            FROM tickets t\n            JOIN ticket_types tt ON t.ticket_type_id = tt.id\n            WHERE t.owner_id = $1 \n            AND tt.event_id = $2 \n            AND tt.is_free = true \n            AND t.status = 'valid'\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0c1f305648c307687bb6932e4243751995a53923f866991cb102d65ec9052a0f"
+}

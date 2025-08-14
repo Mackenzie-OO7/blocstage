@@ -1,0 +1,127 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO transactions (\n                id, ticket_id, user_id, amount, currency, status, \n                created_at, updated_at, receipt_number, transaction_sponsorship_fee\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "ticket_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "amount",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 4,
+        "name": "currency",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "stellar_transaction_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "receipt_number",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "refund_amount",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 11,
+        "name": "refund_transaction_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 12,
+        "name": "refund_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "refunded_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "transaction_sponsorship_fee",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 15,
+        "name": "gas_fee_xlm",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 16,
+        "name": "sponsor_account_used",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Numeric",
+        "Varchar",
+        "Varchar",
+        "Timestamptz",
+        "Timestamptz",
+        "Varchar",
+        "Numeric"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "7fc29eaee14e5b22f4d683d3d7a0a1d57892f1304abe8a1c387185d360600600"
+}

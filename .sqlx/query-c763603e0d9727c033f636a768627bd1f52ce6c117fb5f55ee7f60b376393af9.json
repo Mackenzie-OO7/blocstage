@@ -1,0 +1,106 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO events (\n            id, organizer_id, title, description, location, \n            start_time, end_time, created_at, updated_at,\n            status, banner_image_url, category, tags\n        )\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n        RETURNING *\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "organizer_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "location",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "start_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "end_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "banner_image_url",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "category",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 12,
+        "name": "tags",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Varchar",
+        "Text",
+        "Varchar",
+        "Timestamptz",
+        "Timestamptz",
+        "Timestamptz",
+        "Timestamptz",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "c763603e0d9727c033f636a768627bd1f52ce6c117fb5f55ee7f60b376393af9"
+}

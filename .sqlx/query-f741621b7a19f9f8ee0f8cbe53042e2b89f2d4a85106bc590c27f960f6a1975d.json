@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO platform_fee_calculations (\n            transaction_id, ticket_price, base_sponsorship_fee, gas_cost_usdc,\n            xlm_to_usdc_rate, margin_percentage, final_sponsorship_fee, calculation_method\n        )\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Numeric",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f741621b7a19f9f8ee0f8cbe53042e2b89f2d4a85106bc590c27f960f6a1975d"
+}

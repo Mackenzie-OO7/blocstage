@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE users\n            SET \n                reset_token = $1, \n                reset_token_expires = $2, \n                updated_at = $3\n            WHERE id = $4 AND status = 'active'\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Timestamptz",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cbe0fbb2b49a72260a4c9856bbcef67ba1f568effc2afe6cba8479774ce91a8a"
+}

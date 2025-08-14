@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM sponsor_accounts WHERE public_key = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "account_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "public_key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "minimum_balance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 5,
+        "name": "current_balance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_balance_check",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "transactions_sponsored",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "encrypted_secret_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_by",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "9284f2f445e54003463a88f9381bab37efd2b7c967c790d54e5d084213003ca3"
+}

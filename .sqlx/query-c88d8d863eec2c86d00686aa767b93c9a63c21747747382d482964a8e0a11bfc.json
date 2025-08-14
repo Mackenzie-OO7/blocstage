@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "ALTER TABLE transactions ADD COLUMN receipt_number VARCHAR(255)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "c88d8d863eec2c86d00686aa767b93c9a63c21747747382d482964a8e0a11bfc"
+}

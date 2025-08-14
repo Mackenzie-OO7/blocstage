@@ -1,0 +1,99 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO ticket_types (\n                id, event_id, name, description, is_free, price, currency, \n                total_supply, remaining, is_active, created_at, updated_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "event_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "price",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 5,
+        "name": "currency",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "total_supply",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "remaining",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "is_active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 11,
+        "name": "is_free",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Varchar",
+        "Text",
+        "Bool",
+        "Numeric",
+        "Varchar",
+        "Int4",
+        "Int4",
+        "Bool",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "dcdc4625fca4c823896926b4507229bfe6c0220303c82bc31b315b9ef85bc54b"
+}

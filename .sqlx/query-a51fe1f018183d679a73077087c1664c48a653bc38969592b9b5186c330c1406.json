@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO ticket_admin_actions (\n                id, ticket_id, admin_id, action_type, reason, created_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Varchar",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a51fe1f018183d679a73077087c1664c48a653bc38969592b9b5186c330c1406"
+}

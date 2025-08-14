@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT \n            COALESCE(SUM(\n                CASE \n                    WHEN t.transaction_sponsorship_fee IS NOT NULL \n                    THEN t.amount - t.transaction_sponsorship_fee\n                    ELSE t.amount\n                END\n            ), 0) as revenue\n        FROM transactions t\n        JOIN tickets tk ON t.ticket_id = tk.id\n        JOIN ticket_types tt ON tk.ticket_type_id = tt.id\n        WHERE \n            tt.event_id = $1 \n            AND t.status = 'completed'\n            AND t.currency = 'USDC'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "revenue",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c70fb4a673f3114b2f2f5ba0e420af7d4bce5fe1571d1621154f3b51e21a2bf0"
+}

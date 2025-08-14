@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO event_organizers (event_id, user_id, role, permissions, added_at, added_by)\n        VALUES ($1, $2, 'owner', $3, $4, $5)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Jsonb",
+        "Timestamptz",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5b3671dbf544cd819d1d7e44a420fa96f857ce8803bd8793f13790634bf7c710"
+}

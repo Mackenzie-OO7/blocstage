@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT \n            COUNT(DISTINCT t.id) as total_tickets_sold,\n            COUNT(DISTINCT CASE WHEN t.status = 'valid' THEN t.id END) as valid_tickets,\n            COUNT(DISTINCT CASE WHEN t.status = 'used' THEN t.id END) as used_tickets,\n            COUNT(DISTINCT CASE WHEN t.status = 'cancelled' THEN t.id END) as cancelled_tickets,\n            COALESCE(SUM(CASE WHEN tr.status = 'completed' THEN tr.amount ELSE 0 END), 0) as total_revenue,\n            COUNT(DISTINCT tt.id) as ticket_types_count\n        FROM ticket_types tt\n        LEFT JOIN tickets t ON tt.id = t.ticket_type_id\n        LEFT JOIN transactions tr ON t.id = tr.ticket_id\n        WHERE tt.event_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total_tickets_sold",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "valid_tickets",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "used_tickets",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "cancelled_tickets",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "total_revenue",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 5,
+        "name": "ticket_types_count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "2f0feb3fea45171b374d71d76fb0aa054f5463d0aa1936103adf97c932d1aadd"
+}

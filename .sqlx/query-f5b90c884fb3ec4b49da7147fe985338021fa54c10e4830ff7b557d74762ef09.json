@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO event_payouts (event_id, transaction_hash, amount, paid_at)\n        VALUES ($1, $2, $3, NOW())\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Numeric"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f5b90c884fb3ec4b49da7147fe985338021fa54c10e4830ff7b557d74762ef09"
+}

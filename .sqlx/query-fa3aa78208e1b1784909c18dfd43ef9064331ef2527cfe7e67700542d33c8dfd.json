@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE events \n            SET status = 'ended', updated_at = $1\n            WHERE status = 'active' AND end_time < $1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fa3aa78208e1b1784909c18dfd43ef9064331ef2527cfe7e67700542d33c8dfd"
+}

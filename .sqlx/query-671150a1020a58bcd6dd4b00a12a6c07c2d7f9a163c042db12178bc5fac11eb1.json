@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT \n                reset_token_expires\n            FROM users\n            WHERE email = $1 AND status = 'active'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reset_token_expires",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "671150a1020a58bcd6dd4b00a12a6c07c2d7f9a163c042db12178bc5fac11eb1"
+}

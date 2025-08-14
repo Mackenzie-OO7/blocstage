@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n                SELECT 1 FROM information_schema.columns \n                WHERE table_name = 'transactions' AND column_name = 'receipt_number'\n            ) as exists",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ade6e1b553f43a6d85faf225f4e6c71c09f46e9800ced4060a7a9cf4d7ba55ab"
+}

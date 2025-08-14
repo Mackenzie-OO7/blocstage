@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COALESCE(SUM(t.transaction_sponsorship_fee), 0) as total_revenue\n            FROM transactions t\n            WHERE t.created_at BETWEEN $1 AND $2\n            AND t.status = 'completed'\n            AND t.transaction_sponsorship_fee IS NOT NULL\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total_revenue",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "329cc5651cebcea0a0c36b538a7fb13f37c2398d6d91fc1e7ffbf25c493af1fc"
+}

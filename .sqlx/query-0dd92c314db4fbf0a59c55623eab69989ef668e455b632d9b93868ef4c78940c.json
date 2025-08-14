@@ -1,0 +1,121 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE users\n            SET \n                password_hash = $1, \n                reset_token = NULL, \n                reset_token_expires = NULL,\n                updated_at = $2\n            WHERE reset_token = $3 \n                AND reset_token_expires > $4 \n                AND status = 'active'\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "username",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "email",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "password_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "stellar_public_key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "stellar_secret_key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "email_verified",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "verification_token",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "reset_token",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "reset_token_expires",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 13,
+        "name": "role",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 14,
+        "name": "stellar_secret_key_encrypted",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "first_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 16,
+        "name": "last_name",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Timestamptz",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "0dd92c314db4fbf0a59c55623eab69989ef668e455b632d9b93868ef4c78940c"
+}

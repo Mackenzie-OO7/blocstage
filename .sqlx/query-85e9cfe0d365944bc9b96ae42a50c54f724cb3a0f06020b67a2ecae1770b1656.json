@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE event_sessions SET session_order = $1, updated_at = $2 WHERE id = $3 AND event_id = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Timestamptz",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "85e9cfe0d365944bc9b96ae42a50c54f724cb3a0f06020b67a2ecae1770b1656"
+}

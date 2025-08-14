@@ -1,0 +1,91 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO sponsor_accounts (account_name, public_key, encrypted_secret_key, minimum_balance, is_active)\n            VALUES ($1, $2, $3, $4, true)\n            RETURNING *\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "account_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "public_key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "is_active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "minimum_balance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 5,
+        "name": "current_balance",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_balance_check",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "transactions_sponsored",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "encrypted_secret_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_by",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Numeric"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "3ef9d88b4e75b80afcc1765c3d347e4cb625b8c1afc1553aac1f6dab1cdd928c"
+}

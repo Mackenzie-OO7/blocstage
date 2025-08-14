@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM event_organizers WHERE event_id = $1 AND user_id = $2 AND role != 'owner'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f1994ed2b74d9a65adeb96e5d61926516f86e21be6bdeeb4e9fe6200bc80f80e"
+}

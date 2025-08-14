@@ -1,0 +1,118 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM users WHERE email = $1 AND status != 'deleted'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "username",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "email",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "password_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "stellar_public_key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "stellar_secret_key",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "email_verified",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "verification_token",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "reset_token",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "reset_token_expires",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 13,
+        "name": "role",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 14,
+        "name": "stellar_secret_key_encrypted",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "first_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 16,
+        "name": "last_name",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "ac94e2ab56fe92bedafd7651b0d967139dca30df6cc6f706bcb1a787e9259592"
+}
