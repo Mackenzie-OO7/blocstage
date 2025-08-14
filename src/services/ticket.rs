@@ -1,4 +1,3 @@
-// TODO: finalize on AWS or Digital Ocean
 use crate::models::{
     event::Event, ticket::Ticket, ticket_type::TicketType, transaction::Transaction, user::User,
 };
@@ -7,15 +6,11 @@ use crate::services::sponsor_manager::SponsorManager;
 use crate::services::fee_calculator::FeeCalculator;
 use crate::services::payment_orchestrator::PaymentOrchestrator;
 use anyhow::{anyhow, Result};
-use aws_config::meta::region::RegionProviderChain;
-use aws_sdk_s3::config::Region;
-use aws_sdk_s3::Client as S3Client;
-// use base64::{engine::general_purpose, Engine as _};
 use bigdecimal::{BigDecimal};
 use chrono::{DateTime, Utc};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
-use log::{error, info, warn};
+use log::{error, info,};
 #[allow(unused_imports)]
 use printpdf::{Mm, PdfDocument, Point, Rgb};
 // use qrcode::render::svg;
@@ -30,8 +25,7 @@ use uuid::Uuid;
 
 pub struct TicketService {
     pool: PgPool,
-    stellar: StellarService,
-    s3_client: Option<S3Client>,
+    _stellar: StellarService,
     sponsor_manager: SponsorManager,
     fee_calculator: FeeCalculator,
     payment_orchestrator: PaymentOrchestrator,
@@ -77,40 +71,22 @@ impl TicketService {
             .ok_or_else(|| anyhow!("User not found"))
     }
     pub async fn new(pool: PgPool) -> Result<Self> {
-        let stellar = StellarService::new()?;
+        let _stellar = StellarService::new()?;
         let sponsor_manager = SponsorManager::new(pool.clone())?;
         let fee_calculator = FeeCalculator::new(pool.clone())?;
         let payment_orchestrator = PaymentOrchestrator::new(
-            stellar.clone(),
+            _stellar.clone(),
             sponsor_manager.clone(),
             fee_calculator.clone(),
         )?;
-
-        //TODO: If we end up using AWS, initialize S3 client with AWS credentials. if not, remove s3 everywhere
-        let s3_client = match Self::initialize_s3().await {
-            Ok(client) => Some(client),
-            Err(e) => {
-                warn!("Failed to initialize S3 client: {}", e);
-                None
-            }
-        };
         
         Ok(Self {
             pool,
-            stellar,
-            s3_client,
+            _stellar,
             sponsor_manager,
             fee_calculator,
             payment_orchestrator,
         })
-    }
-
-    // Initialize S3 client
-    async fn initialize_s3() -> Result<S3Client> {
-        let region_provider =
-            RegionProviderChain::default_provider().or_else(Region::new("us-east-1"));
-        let config = aws_config::from_env().region(region_provider).load().await;
-        Ok(S3Client::new(&config))
     }
 
     pub async fn claim_free_ticket(
@@ -919,39 +895,19 @@ impl TicketService {
     }
 
     async fn upload_to_storage(&self, path: &str, content: Vec<u8>) -> Result<String> {
-        if let Some(client) = &self.s3_client {
-            let bucket_name =
-                env::var("S3_BUCKET_NAME").map_err(|_| anyhow!("S3_BUCKET_NAME not set"))?;
+        let storage_dir =
+            env::var("LOCAL_STORAGE_DIR").unwrap_or_else(|_| "storage".to_string());
 
-            client
-                .put_object()
-                .bucket(&bucket_name)
-                .key(path)
-                .body(content.into())
-                .content_type("application/pdf")
-                .send()
-                .await?;
-
-            let base_url = env::var("S3_BASE_URL").map_err(|_| anyhow!("S3_BASE_URL not set"))?;
-
-            return Ok(format!("{}/{}/{}", base_url, bucket_name, path));
-        } else {
-            let storage_dir =
-                env::var("LOCAL_STORAGE_DIR").unwrap_or_else(|_| "storage".to_string());
-
-            let path_obj = Path::new(&storage_dir).join(path);
-            if let Some(parent) = path_obj.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-
-            let mut file = File::create(&path_obj).await?;
-            file.write_all(&content).await?;
-
-            let app_url =
-                env::var("APP_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
-
-            return Ok(format!("{}/storage/{}", app_url, path));
+        let path_obj = Path::new(&storage_dir).join(path);
+        if let Some(parent) = path_obj.parent() {
+            tokio::fs::create_dir_all(parent).await?;
         }
+
+        let mut file = File::create(&path_obj).await?;
+        file.write_all(&content).await?;
+
+        let app_url = env::var("APP_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
+        return Ok(format!("{}/storage/{}", app_url, path));
     }
 
     // TODO: configure email for ticket purchase with PDF attachment (&QR code)

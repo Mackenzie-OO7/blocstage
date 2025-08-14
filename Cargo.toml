@@ -10,8 +10,6 @@ actix-rt = "2.10.0"
 actix-web = "4.10.2"
 actix-web-actors = "4.2"
 anyhow = "1.0.98"
-aws-config = "1.6.2"
-aws-sdk-s3 = "1.85.0"
 base64 = "0.22.1"
 bcrypt = "0.17.0"
 bigdecimal = { version = "0.4.8", features = ["serde"] }

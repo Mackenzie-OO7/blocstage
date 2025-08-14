@@ -49,13 +49,18 @@ async fn create_test_user(pool: &PgPool) -> (Uuid, String) {
     let password_hash = bcrypt::hash("password123", 4).unwrap();
     println!("🔐 Created test user: {} with ID: {}", email, user_id);
 
-    sqlx::query!(
+    sqlx::query(
         r#"
         INSERT INTO users (id, username, email, password_hash, email_verified, role, status, first_name, last_name, created_at, updated_at)
         VALUES ($1, $2, $3, $4, true, 'user', 'active', $5, $6, NOW(), NOW())
         "#,
-        user_id, username, email, password_hash, "Test", "User"
     )
+    .bind(user_id)
+    .bind(username)
+    .bind(email.clone())
+    .bind(password_hash)
+    .bind("Test")
+    .bind("User")
     .execute(pool)
     .await
     .expect("Failed to create test user");
@@ -183,10 +188,10 @@ async fn test_event_creation_and_management() {
 
     let (user_id, email) = create_test_user(&pool).await;
 
-    sqlx::query!(
-        "UPDATE users SET email_verified = true WHERE id = $1",
-        user_id
+    sqlx::query(
+        "UPDATE users SET email_verified = true WHERE id = $1"
     )
+    .bind(user_id)
     .execute(&pool)
     .await
     .expect("Failed to verify user");
