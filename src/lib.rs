@@ -15,13 +15,12 @@ pub async fn api_info() -> impl Responder {
         "description": "Decentralized ticketing platform on Stellar",
         "endpoints": {
             "health": "/health",
-            "api_docs": "/api",
-            "auth": "/api/auth/*",
-            "events": "/api/events/*",
-            "tickets": "/api/tickets/*",
-            "users": "/api/users/*",
-            "transactions": "/api/transactions/*",
-            "admin": "/api/admin/*"
+            "auth": "/auth/*",
+            "events": "/events/*",
+            "tickets": "/tickets/*",
+            "users": "/users/*",
+            "transactions": "/transactions/*",
+            "admin": "/admin/*"
         }
     }))
 }
