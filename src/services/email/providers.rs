@@ -120,12 +120,12 @@ impl EmailProvider for SendGridProvider {
             "subject": request.subject,
             "content": [
                 {
-                    "type": "text/html",
-                    "value": request.html_body
-                },
-                {
                     "type": "text/plain", 
                     "value": request.text_body.unwrap_or_else(|| "Please view this email in HTML format.".to_string())
+                },
+                {
+                    "type": "text/html",
+                    "value": request.html_body
                 }
             ]
         });
