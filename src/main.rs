@@ -101,6 +101,11 @@ async fn main(
         "SPONSOR_LOW_BALANCE_ALERT_THRESHOLD",
         "REDIS_URL",
         "SENDGRID_API_KEY",
+        "SENDGRID_TEMPLATE_EMAIL_VERIFICATION",
+        "SENDGRID_TEMPLATE_PASSWORD_RESET",
+        "SENDGRID_TEMPLATE_WELCOME",
+        "SENDGRID_TEMPLATE_PASSWORD_CHANGED",
+        "SENDGRID_TEMPLATE_ACCOUNT_DELETED",
     ] {
         if let Some(value) = secrets.get(key) {
             std::env::set_var(key, value);

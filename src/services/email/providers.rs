@@ -1,4 +1,4 @@
-use super::{EmailProvider, EmailRequest};
+use super::{EmailProvider, EmailRequest, TemplateEmailRequest};
 use anyhow::{Result, anyhow};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
@@ -64,6 +64,10 @@ impl EmailProvider for SmtpProvider {
         Ok(format!("smtp-{}", uuid::Uuid::new_v4().to_string()))
     }
 
+    async fn send_template_email(&self, _request: TemplateEmailRequest) -> Result<String> {
+        Err(anyhow!("Template emails not supported for SMTP provider. Use send_email instead."))
+    }
+
     async fn health_check(&self) -> Result<bool> {
         Ok(true)
     }
@@ -101,6 +105,31 @@ impl SendGridProvider {
 
         Ok(Self { client, api_key })
     }
+
+    async fn send_request(&self, payload: serde_json::Value) -> Result<String> {
+        let response = self.client
+            .post("https://api.sendgrid.com/v3/mail/send")
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            // SendGrid returns the message ID in the X-Message-Id header
+            let message_id = response
+                .headers()
+                .get("X-Message-Id")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown")
+                .to_string();
+
+            Ok(message_id)
+        } else {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            Err(anyhow!("SendGrid API error: {}", error_text))
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -130,28 +159,26 @@ impl EmailProvider for SendGridProvider {
             ]
         });
 
-        let response = self.client
-            .post("https://api.sendgrid.com/v3/mail/send")
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&payload)
-            .send()
-            .await?;
+        self.send_request(payload).await
+    }
 
-        if response.status().is_success() {
-            // (sendGrid returns the message ID in the X-Message-Id header)
-            let message_id = response
-                .headers()
-                .get("X-Message-Id")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown")
-                .to_string();
+    async fn send_template_email(&self, request: TemplateEmailRequest) -> Result<String> {
+        let payload = json!({
+            "personalizations": [{
+                "to": [{
+                    "email": request.to,
+                    "name": request.to_name.unwrap_or_default()
+                }],
+                "dynamic_template_data": request.template_data
+            }],
+            "from": {
+                "email": request.from,
+                "name": request.from_name.unwrap_or_else(|| "BlocStage".to_string())
+            },
+            "template_id": request.template_id
+        });
 
-            Ok(message_id)
-        } else {
-            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            Err(anyhow!("SendGrid API error: {}", error_text))
-        }
+        self.send_request(payload).await
     }
 
     async fn health_check(&self) -> Result<bool> {
