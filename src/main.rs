@@ -3,6 +3,7 @@ pub mod middleware;
 pub mod models;
 pub mod services;
 
+use actix_cors::Cors;
 use actix_web::{web, HttpResponse, Responder};
 use dotenv::dotenv;
 use log::{error, info, warn};
@@ -205,8 +206,34 @@ async fn main(
 
     info!("✅ Blocstage API setup completed - creating service configuration");
 
-    // Simple service configuration function
+    let cors_origins = env::var("CORS_ALLOWED_ORIGINS")
+        .unwrap_or_else(|_| "https://blocstage.com,http://localhost:3000,http://localhost:5173".to_string());
+    let origins: Vec<String> = cors_origins.split(',').map(|s| s.to_string()).collect();
+    
+    info!("🌍 CORS allowed origins: {:?}", origins);
+
     let config = move |cfg: &mut web::ServiceConfig| {
+        let mut cors = Cors::default()
+            .allowed_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+            .allowed_headers(vec![
+                "accept",
+                "accept-encoding", 
+                "authorization",
+                "content-type",
+                "dnt",
+                "origin",
+                "user-agent",
+                "x-csrftoken",
+                "x-requested-with",
+            ])
+            .supports_credentials()
+            .max_age(3600);
+
+        // Add each origin separately
+        for origin in &origins {
+            cors = cors.allowed_origin(origin);
+        }
+
         cfg.app_data(web::Data::new(db_pool.clone()))
             .app_data(web::Data::new(redis_service.clone()))
             .app_data(
@@ -238,9 +265,13 @@ async fn main(
                         .into()
                     }),
             )
-            .route("/health", web::get().to(health_check))
-            .configure(configure_routes)
-            .default_service(web::route().to(not_found));
+            .service(
+                web::scope("")
+                    .wrap(cors)
+                    .route("/health", web::get().to(health_check))
+                    .configure(configure_routes)
+                    .default_service(web::route().to(not_found))
+            );
     };
 
     info!("🚀 Service configuration ready for deployment");
