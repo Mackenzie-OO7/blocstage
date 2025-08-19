@@ -197,8 +197,23 @@ pub async fn verify_email(
                 "✅ Email verification successful for user: {} ({})",
                 user.id, user.email
             );
+            
+            match crate::services::email::EmailService::new().await {
+                Ok(email_service) => {
+                    if let Err(e) = email_service.send_welcome_email(&user.email, &user.first_name).await {
+                        // Don't fail the verification if welcome email fails. just log error
+                        error!("Failed to send welcome email to {}: {}", user.email, e);
+                    } else {
+                        info!("📧 Welcome email sent to {} after verification", user.email);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to initialize email service for welcome email: {}", e);
+                }
+            }
+            
             HttpResponse::Ok().json(SuccessResponse {
-                message: "Email verified successfully. You can now log in.".to_string(),
+                message: "Email verified successfully. Welcome to BlocStage! You can now log in.".to_string(),
             })
         }
         Err(e) => {

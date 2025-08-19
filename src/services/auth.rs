@@ -387,7 +387,7 @@ impl AuthService {
         };
 
         email_service
-            .send_password_reset_email(&user.email, &user.username, token)
+            .send_password_reset_email(&user.email, &user.first_name, token)
             .await?;
 
         info!("📧 Password reset email sent to: {}", user.email);
@@ -400,7 +400,7 @@ impl AuthService {
         };
 
         email_service
-            .send_password_changed_email(&user.email, &user.username)
+            .send_password_changed_email(&user.email, &user.first_name)
             .await?;
 
         info!("📧 Password changed email sent to: {}", user.email);
@@ -413,7 +413,7 @@ impl AuthService {
         };
 
         email_service
-            .send_account_deleted_email(&user.email, &user.username)
+            .send_account_deleted_email(&user.email, &user.first_name)
             .await?;
 
         info!("📧 Account deleted email sent to: {}", user.email);
