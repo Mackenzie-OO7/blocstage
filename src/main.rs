@@ -1,8 +1,3 @@
-pub mod controllers;
-pub mod middleware;
-pub mod models;
-pub mod services;
-
 use actix_cors::Cors;
 use actix_web::{web, HttpResponse, Responder};
 use dotenv::dotenv;
@@ -11,14 +6,16 @@ use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use std::{env, time::Duration};
 
-use crate::services::scheduler::SchedulerService;
-use crate::services::sponsor_manager::SponsorManager;
-use crate::services::RedisService;
+use blocstage::services::{SchedulerService, SponsorManager, RedisService, StellarService};
+use blocstage::services::email::EmailService;
+use std::sync::Arc;
 
-use blocstage::api_info;
 use blocstage::controllers::configure_routes;
 
-async fn health_check(redis: web::Data<Option<RedisService>>) -> impl Responder {
+async fn health_check(
+    redis: Option<web::Data<Arc<RedisService>>>,
+    email_service: Option<web::Data<Arc<EmailService>>>,
+) -> impl Responder {
     let mut health_status = json!({
         "status": "healthy",
         "service": "blocstage-api",
@@ -28,7 +25,7 @@ async fn health_check(redis: web::Data<Option<RedisService>>) -> impl Responder 
         }
     });
 
-    if let Some(redis) = redis.as_ref() {
+    if let Some(redis) = redis.as_ref().map(|d| d.get_ref()) {
         match redis.health_check().await {
             Ok(redis_health) => {
                 health_status["components"]["redis"] = json!({
@@ -50,15 +47,15 @@ async fn health_check(redis: web::Data<Option<RedisService>>) -> impl Responder 
         });
     }
 
-    if let Ok(email_service) = crate::services::email::EmailService::new().await {
-        let email_health = match email_service.health_check().await {
+    if let Some(email) = email_service.as_ref().map(|d| d.get_ref()) {
+        let email_health = match email.health_check().await {
             Ok(true) => "healthy",
             Ok(false) => "unhealthy",
             Err(_) => "error",
         };
         health_status["checks"]["email"] = serde_json::json!({
             "status": email_health,
-            "provider": email_service.provider_name()
+            "provider": email.provider_name()
         });
     }
 
@@ -148,7 +145,7 @@ async fn main(
         .await
         .expect("Failed to create database pool");
 
-    let redis_service: Option<RedisService> = match RedisService::new().await {
+    let redis_service: Option<Arc<RedisService>> = match RedisService::new().await {
         Ok(redis) => {
             info!("✅ Redis connection established");
 
@@ -158,11 +155,23 @@ async fn main(
                 Err(e) => warn!("⚠️ Redis ping failed: {}", e),
             }
 
-            Some(redis)
+            Some(Arc::new(redis))
         }
         Err(e) => {
             warn!("⚠️ Redis connection failed: {}", e);
             warn!("🚀 Application will continue without Redis caching");
+            None
+        }
+    };
+
+    // Initialize shared services
+    let stellar_service = Arc::new(
+        StellarService::new().expect("Failed to initialize Stellar service"),
+    );
+    let email_service: Option<Arc<EmailService>> = match EmailService::new().await {
+        Ok(service) => Some(Arc::new(service)),
+        Err(e) => {
+            warn!("⚠️ Email service initialization failed: {}", e);
             None
         }
     };
@@ -234,44 +243,52 @@ async fn main(
             cors = cors.allowed_origin(origin);
         }
 
-        cfg.app_data(web::Data::new(db_pool.clone()))
-            .app_data(web::Data::new(redis_service.clone()))
-            .app_data(
-                web::JsonConfig::default()
-                    .limit(10 * 1024 * 1024)
-                    .error_handler(|err, _req| {
-                        error!("JSON payload error: {}", err);
-                        actix_web::error::InternalError::from_response(
-                        err,
-                        HttpResponse::BadRequest().json(json!({
-                            "error": "Invalid JSON payload",
-                            "message": "Request body contains invalid JSON or exceeds size limit"
-                        }))
-                    ).into()
-                    }),
-            )
-            .app_data(
-                web::FormConfig::default()
-                    .limit(5 * 1024 * 1024)
-                    .error_handler(|err, _req| {
-                        error!("Form payload error: {}", err);
-                        actix_web::error::InternalError::from_response(
+        // Register shared app data at the root so all scopes/handlers can access it
+        cfg.app_data(web::Data::new(db_pool.clone()));
+        cfg.app_data(web::Data::new(stellar_service.clone()));
+        if let Some(redis) = &redis_service {
+            cfg.app_data(web::Data::new(redis.clone()));
+        }
+        if let Some(email) = &email_service {
+            cfg.app_data(web::Data::new(email.clone()));
+        }
+
+        cfg.service(
+            web::scope("")
+                .wrap(cors)
+                .app_data(
+                    web::JsonConfig::default()
+                        .limit(10 * 1024 * 1024)
+                        .error_handler(|err, _req| {
+                            error!("JSON payload error: {}", err);
+                            actix_web::error::InternalError::from_response(
                             err,
                             HttpResponse::BadRequest().json(json!({
-                                "error": "Invalid form data",
-                                "message": "Form data is invalid or exceeds size limit"
-                            })),
-                        )
-                        .into()
-                    }),
-            )
-            .service(
-                web::scope("")
-                    .wrap(cors)
-                    .route("/health", web::get().to(health_check))
-                    .configure(configure_routes)
-                    .default_service(web::route().to(not_found))
-            );
+                                "error": "Invalid JSON payload",
+                                "message": "Request body contains invalid JSON or exceeds size limit"
+                            }))
+                        ).into()
+                        }),
+                )
+                .app_data(
+                    web::FormConfig::default()
+                        .limit(5 * 1024 * 1024)
+                        .error_handler(|err, _req| {
+                            error!("Form payload error: {}", err);
+                            actix_web::error::InternalError::from_response(
+                                err,
+                                HttpResponse::BadRequest().json(json!({
+                                    "error": "Invalid form data",
+                                    "message": "Form data is invalid or exceeds size limit"
+                                })),
+                            )
+                            .into()
+                        }),
+                )
+                .route("/health", web::get().to(health_check))
+                .configure(configure_routes)
+                .default_service(web::route().to(not_found))
+        );
     };
 
     info!("🚀 Service configuration ready for deployment");

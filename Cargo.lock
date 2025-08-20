@@ -994,6 +994,7 @@ dependencies = [
  "lettre",
  "log",
  "num_cpus",
+ "once_cell",
  "opentelemetry",
  "pdf-canvas",
  "printpdf",

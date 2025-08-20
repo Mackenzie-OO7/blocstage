@@ -5,6 +5,9 @@ use crate::models::user::{
 };
 use crate::services::auth::AuthService;
 use crate::services::RedisService;
+use crate::services::stellar::StellarService;
+use crate::services::email::EmailService;
+use std::sync::Arc;
 use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use log::{error, info, warn};
 use serde::{Serialize};
@@ -29,6 +32,9 @@ impl fmt::Display for ErrorResponse {
 
 pub async fn register(
     pool: web::Data<sqlx::PgPool>,
+    stellar: web::Data<Arc<StellarService>>,
+    redis: Option<web::Data<Arc<RedisService>>>,
+    email_service: Option<web::Data<Arc<EmailService>>>,
     user_data: web::Json<CreateUserRequest>,
 ) -> impl Responder {
     info!("👤 Registration attempt for email: {}", user_data.email);
@@ -56,15 +62,12 @@ pub async fn register(
         });
     }
 
-    let auth = match AuthService::new(pool.get_ref().clone()).await {
-        Ok(service) => service,
-        Err(e) => {
-            error!("Failed to initialize auth service: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            });
-        }
-    };
+    let auth = AuthService::new_with_services(
+        pool.get_ref().clone(),
+        stellar.get_ref().clone(),
+        redis.as_ref().map(|d| d.get_ref().clone()),
+        email_service.as_ref().map(|d| d.get_ref().clone()),
+    );
 
     match auth.register(user_data.into_inner()).await {
         Ok(user) => HttpResponse::Created().json(serde_json::json!({
@@ -104,21 +107,21 @@ pub async fn register(
 
 pub async fn login(
     pool: web::Data<sqlx::PgPool>,
+    stellar: web::Data<Arc<StellarService>>,
+    redis: Option<web::Data<Arc<RedisService>>>,
+    email_service: Option<web::Data<Arc<EmailService>>>,
     req: HttpRequest,
     login_data: web::Json<LoginRequest>,
 ) -> impl Responder {
     let ip_address = extract_ip_address(&req);
     let user_agent = extract_user_agent(&req);
 
-    let auth = match AuthService::new(pool.get_ref().clone()).await {
-        Ok(service) => service,
-        Err(e) => {
-            error!("Failed to initialize auth service: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            });
-        }
-    };
+    let auth = AuthService::new_with_services(
+        pool.get_ref().clone(),
+        stellar.get_ref().clone(),
+        redis.as_ref().map(|d| d.get_ref().clone()),
+        email_service.as_ref().map(|d| d.get_ref().clone()),
+    );
 
     match auth
         .login(login_data.into_inner(), ip_address, user_agent)
@@ -160,6 +163,9 @@ pub async fn login(
 
 pub async fn verify_email(
     pool: web::Data<sqlx::PgPool>,
+    stellar: web::Data<Arc<StellarService>>,
+    redis: Option<web::Data<Arc<RedisService>>>,
+    email_service: Option<web::Data<Arc<EmailService>>>,
     data: web::Query<VerifyEmailRequest>,
 ) -> impl Responder {
     info!(
@@ -181,15 +187,12 @@ pub async fn verify_email(
         });
     }
 
-    let auth = match AuthService::new(pool.get_ref().clone()).await {
-        Ok(service) => service,
-        Err(e) => {
-            error!("Failed to initialize auth service: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            });
-        }
-    };
+    let auth = AuthService::new_with_services(
+        pool.get_ref().clone(),
+        stellar.get_ref().clone(),
+        redis.as_ref().map(|d| d.get_ref().clone()),
+        email_service.as_ref().map(|d| d.get_ref().clone()),
+    );
 
     match auth.verify_email(&data.token).await {
         Ok(user) => {
@@ -198,17 +201,11 @@ pub async fn verify_email(
                 user.id, user.email
             );
             
-            match crate::services::email::EmailService::new().await {
-                Ok(email_service) => {
-                    if let Err(e) = email_service.send_welcome_email(&user.email, &user.first_name).await {
-                        // Don't fail the verification if welcome email fails. just log error
-                        error!("Failed to send welcome email to {}: {}", user.email, e);
-                    } else {
-                        info!("📧 Welcome email sent to {} after verification", user.email);
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to initialize email service for welcome email: {}", e);
+            if let Some(email) = email_service.as_ref().map(|d| d.get_ref()) {
+                if let Err(e) = email.send_welcome_email(&user.email, &user.first_name).await {
+                    error!("Failed to send welcome email to {}: {}", user.email, e);
+                } else {
+                    info!("📧 Welcome email sent to {} after verification", user.email);
                 }
             }
             
@@ -236,6 +233,9 @@ pub async fn verify_email(
 
 pub async fn request_password_reset(
     pool: web::Data<sqlx::PgPool>,
+    stellar: web::Data<Arc<StellarService>>,
+    redis: Option<web::Data<Arc<RedisService>>>,
+    email_service: Option<web::Data<Arc<EmailService>>>,
     data: web::Json<RequestPasswordResetRequest>,
 ) -> impl Responder {
     info!("🔑 Password reset request for email: {}", data.email);
@@ -252,15 +252,12 @@ pub async fn request_password_reset(
         });
     }
 
-    let auth = match AuthService::new(pool.get_ref().clone()).await {
-        Ok(service) => service,
-        Err(e) => {
-            error!("Failed to initialize auth service: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            });
-        }
-    };
+    let auth = AuthService::new_with_services(
+        pool.get_ref().clone(),
+        stellar.get_ref().clone(),
+        redis.as_ref().map(|d| d.get_ref().clone()),
+        email_service.as_ref().map(|d| d.get_ref().clone()),
+    );
 
     match auth.request_password_reset(&data.email).await {
         Ok(_) => {
@@ -296,6 +293,9 @@ pub async fn request_password_reset(
 
 pub async fn reset_password(
     pool: web::Data<sqlx::PgPool>,
+    stellar: web::Data<Arc<StellarService>>,
+    redis: Option<web::Data<Arc<RedisService>>>,
+    email_service: Option<web::Data<Arc<EmailService>>>,
     data: web::Json<ResetPasswordRequest>,
 ) -> impl Responder {
     info!(
@@ -334,15 +334,12 @@ pub async fn reset_password(
         });
     }
 
-    let auth = match AuthService::new(pool.get_ref().clone()).await {
-        Ok(service) => service,
-        Err(e) => {
-            error!("Failed to initialize auth service: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            });
-        }
-    };
+    let auth = AuthService::new_with_services(
+        pool.get_ref().clone(),
+        stellar.get_ref().clone(),
+        redis.as_ref().map(|d| d.get_ref().clone()),
+        email_service.as_ref().map(|d| d.get_ref().clone()),
+    );
 
     match auth.reset_password(&data.token, &data.new_password).await {
         Ok(_) => {
@@ -373,6 +370,9 @@ pub async fn reset_password(
 
 pub async fn logout(
     pool: web::Data<sqlx::PgPool>,
+    stellar: web::Data<Arc<StellarService>>,
+    redis: Option<web::Data<Arc<RedisService>>>,
+    email_service: Option<web::Data<Arc<EmailService>>>,
     req: HttpRequest,
     user: AuthenticatedUser,
 ) -> impl Responder {
@@ -392,15 +392,12 @@ pub async fn logout(
         }
     };
 
-    let auth = match AuthService::new(pool.get_ref().clone()).await {
-        Ok(service) => service,
-        Err(e) => {
-            error!("Failed to initialize auth service: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            });
-        }
-    };
+    let auth = AuthService::new_with_services(
+        pool.get_ref().clone(),
+        stellar.get_ref().clone(),
+        redis.as_ref().map(|d| d.get_ref().clone()),
+        email_service.as_ref().map(|d| d.get_ref().clone()),
+    );
 
     match auth.logout(user.id, token).await {
         Ok(_) => {
@@ -418,16 +415,19 @@ pub async fn logout(
     }
 }
 
-pub async fn logout_all(pool: web::Data<sqlx::PgPool>, user: AuthenticatedUser) -> impl Responder {
-    let auth = match AuthService::new(pool.get_ref().clone()).await {
-        Ok(service) => service,
-        Err(e) => {
-            error!("Failed to initialize auth service: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            });
-        }
-    };
+pub async fn logout_all(
+    pool: web::Data<sqlx::PgPool>,
+    stellar: web::Data<Arc<StellarService>>,
+    redis: Option<web::Data<Arc<RedisService>>>,
+    email_service: Option<web::Data<Arc<EmailService>>>,
+    user: AuthenticatedUser,
+) -> impl Responder {
+    let auth = AuthService::new_with_services(
+        pool.get_ref().clone(),
+        stellar.get_ref().clone(),
+        redis.as_ref().map(|d| d.get_ref().clone()),
+        email_service.as_ref().map(|d| d.get_ref().clone()),
+    );
 
     match auth.logout_all_sessions(user.id).await {
         Ok(_) => {
@@ -447,17 +447,17 @@ pub async fn logout_all(pool: web::Data<sqlx::PgPool>, user: AuthenticatedUser) 
 
 pub async fn delete_account(
     pool: web::Data<sqlx::PgPool>,
+    stellar: web::Data<Arc<StellarService>>,
+    redis: Option<web::Data<Arc<RedisService>>>,
+    email_service: Option<web::Data<Arc<EmailService>>>,
     auth_user: AuthenticatedUser,
 ) -> impl Responder {
-    let auth = match AuthService::new(pool.get_ref().clone()).await {
-        Ok(service) => service,
-        Err(e) => {
-            error!("Failed to initialize auth service: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
-            });
-        }
-    };
+    let auth = AuthService::new_with_services(
+        pool.get_ref().clone(),
+        stellar.get_ref().clone(),
+        redis.as_ref().map(|d| d.get_ref().clone()),
+        email_service.as_ref().map(|d| d.get_ref().clone()),
+    );
 
     match auth.delete_account(auth_user.id).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({
@@ -474,17 +474,15 @@ pub async fn delete_account(
 
 pub async fn get_active_sessions(
     _pool: web::Data<sqlx::PgPool>,
+    redis: web::Data<Option<Arc<RedisService>>>,
     user: AuthenticatedUser,
 ) -> impl Responder {
-    let redis = match RedisService::new().await {
-        Ok(redis) => redis,
-        Err(e) => {
-            error!("Failed to connect to Redis: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to retrieve sessions".to_string(),
-            });
-        }
+    let Some(redis) = redis.get_ref() else {
+        return HttpResponse::ServiceUnavailable().json(ErrorResponse {
+            error: "Redis not configured".to_string(),
+        });
     };
+
     match redis.get_user_active_sessions(user.id).await {
         Ok(sessions) => {
             info!(
@@ -506,22 +504,18 @@ pub async fn get_active_sessions(
     }
 }
 
-// ADD: Revoke specific session endpoint
 pub async fn revoke_session(
     _pool: web::Data<sqlx::PgPool>,
+    redis: web::Data<Option<Arc<RedisService>>>,
     path: web::Path<String>, // JWT ID
     user: AuthenticatedUser,
 ) -> impl Responder {
     let jwt_id = path.into_inner();
 
-    let redis = match RedisService::new().await {
-        Ok(redis) => redis,
-        Err(e) => {
-            error!("Failed to connect to Redis: {}", e);
-            return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to retrieve sessions".to_string(),
-            });
-        }
+    let Some(redis) = redis.get_ref() else {
+        return HttpResponse::ServiceUnavailable().json(ErrorResponse {
+            error: "Redis not configured".to_string(),
+        });
     };
 
     match redis.revoke_specific_session(user.id, &jwt_id).await {

@@ -2,10 +2,14 @@ use crate::models::event::Event;
 use crate::models::user::User;
 use crate::models::EventOrganizer;
 use crate::services::auth::AuthService;
+use crate::services::redis_service::RedisService;
+use crate::services::stellar::StellarService;
+use crate::services::email::EmailService;
 use actix_web::{
     dev::Payload, error::ErrorUnauthorized, http, web, Error, FromRequest, HttpRequest,
     HttpResponse
 };
+use std::sync::Arc;
 use log::{error, info, warn};
 use serde::{Serialize};
 use sqlx::PgPool;
@@ -74,16 +78,26 @@ impl FromRequest for AuthenticatedUser {
                 }
             };
 
-            let auth = match AuthService::new(pool.get_ref().clone()).await {
-                Ok(service) => {
-                    info!("🔧 Auth service created successfully");
-                    service
-                }
-                Err(e) => {
-                    error!("Failed to create auth service: {}", e);
+            let stellar = match req.app_data::<web::Data<Arc<StellarService>>>() {
+                Some(s) => s.get_ref().clone(),
+                None => {
+                    error!("Stellar service not found in app data");
                     return Err(ErrorUnauthorized("Internal server error"));
                 }
             };
+            let redis = req
+                .app_data::<web::Data<Arc<RedisService>>>()
+                .map(|d| d.get_ref().clone());
+            let email_service = req
+                .app_data::<web::Data<Arc<EmailService>>>()
+                .map(|d| d.get_ref().clone());
+
+            let auth = AuthService::new_with_services(
+                pool.get_ref().clone(),
+                stellar,
+                redis,
+                email_service,
+            );
 
             match auth.verify_token(token).await {
                 Ok(user_id) => {

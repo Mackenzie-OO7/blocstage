@@ -22,9 +22,9 @@ pub struct Claims {
 
 pub struct AuthService {
     pool: PgPool,
-    stellar: StellarService,
-    redis: Option<RedisService>,
-    email_service: Option<crate::services::email::EmailService>,
+    stellar: std::sync::Arc<StellarService>,
+    redis: Option<std::sync::Arc<RedisService>>,
+    email_service: Option<std::sync::Arc<crate::services::email::EmailService>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,9 +56,9 @@ impl From<&User> for CachedUserProfile {
 
 impl AuthService {
     pub async fn new(pool: PgPool) -> Result<Self> {
-        let stellar = StellarService::new()?;
+        let stellar = StellarService::global()?;
 
-        let redis = match RedisService::new().await {
+        let redis = match RedisService::global().await {
             Ok(redis) => {
                 info!("✅ Redis initialized for AuthService");
                 Some(redis)
@@ -69,7 +69,7 @@ impl AuthService {
             }
         };
 
-        let email_service = match crate::services::email::EmailService::new().await {
+        let email_service = match crate::services::email::EmailService::global().await {
             Ok(service) => {
                 info!("✅ Email service initialized: {}", service.provider_name());
                 Some(service)
@@ -80,12 +80,21 @@ impl AuthService {
             }
         };
 
-        Ok(Self {
+        Ok(Self { pool, stellar, redis, email_service })
+    }
+
+    pub fn new_with_services(
+        pool: PgPool,
+        stellar: std::sync::Arc<StellarService>,
+        redis: Option<std::sync::Arc<RedisService>>,
+        email_service: Option<std::sync::Arc<crate::services::email::EmailService>>,
+    ) -> Self {
+        Self {
             pool,
             stellar,
             redis,
             email_service,
-        })
+        }
     }
 
     pub async fn register(&self, user_req: CreateUserRequest) -> Result<User> {
@@ -106,7 +115,7 @@ impl AuthService {
         info!("✅ User created with ID: {}", user.id);
 
         let (public_key, secret_key) = self.stellar.generate_keypair()?;
-        info!("🌟 Stellar keypair generated: {}", public_key);
+        debug!("🌟 Stellar keypair generated: {}", public_key);
 
         let user = user
             .update_stellar_keys(&self.pool, &public_key, &secret_key)
@@ -364,7 +373,7 @@ impl AuthService {
             .await
         {
             Ok(_) => {
-                info!("📧 Verification email sent to: {}", user.email);
+                debug!("📧 Verification email sent to: {}", user.email);
             }
             Err(e) => {
                 error!(

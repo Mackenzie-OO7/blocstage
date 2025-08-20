@@ -7,6 +7,8 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::env;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 use soroban_client::{
     account::{Account, AccountBehavior},
@@ -102,6 +104,8 @@ pub struct StellarService {
     usdc_issuer: String,
 }
 
+static STELLAR_GLOBAL: OnceLock<Arc<StellarService>> = OnceLock::new();
+
 impl StellarService {
     pub fn new() -> Result<Self> {
         let network_str = env::var("STELLAR_NETWORK").unwrap_or_else(|_| "testnet".to_string());
@@ -136,6 +140,23 @@ impl StellarService {
             base_fee: 100_000,
             usdc_issuer,
         })
+    }
+
+    pub fn global() -> Result<Arc<Self>> {
+        match STELLAR_GLOBAL.get() {
+            Some(service) => Ok(Arc::clone(service)),
+            None => {
+                let svc = StellarService::new()?;
+                let arc_svc = Arc::new(svc);
+                match STELLAR_GLOBAL.set(Arc::clone(&arc_svc)) {
+                    Ok(_) => Ok(arc_svc),
+                    Err(_) => {
+                        // another thread initialized it first, use that one?
+                        Ok(Arc::clone(STELLAR_GLOBAL.get().unwrap()))
+                    }
+                }
+            }
+        }
     }
 
     pub async fn create_asset_trustline(
@@ -364,7 +385,7 @@ impl StellarService {
             .secret_key()
             .map_err(|e| anyhow!("Failed to get secret key: {:?}", e))?;
 
-        info!("Generated new Stellar keypair: {}", public_key);
+        debug!("Generated new Stellar keypair: {}", public_key);
         Ok((public_key, secret_key))
     }
 

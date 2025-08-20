@@ -1,6 +1,8 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 pub mod providers;
 pub mod templates;
@@ -34,8 +36,9 @@ pub trait EmailProvider: Send + Sync {
     fn provider_name(&self) -> &'static str;
 }
 
+#[derive(Clone)]
 pub struct EmailService {
-    provider: Box<dyn EmailProvider>,
+    provider: Arc<dyn EmailProvider>,
     template_renderer: templates::TemplateRenderer,
     sendgrid_templates: templates::SendGridTemplates,
 }
@@ -62,23 +65,33 @@ impl EmailService {
         })
     }
 
-    async fn create_provider() -> Result<Box<dyn EmailProvider>> {
+    pub async fn global() -> Result<Arc<Self>> {
+        static EMAIL_GLOBAL: OnceLock<Arc<EmailService>> = OnceLock::new();
+        if let Some(svc) = EMAIL_GLOBAL.get() {
+            return Ok(svc.clone());
+        }
+        let created = Arc::new(EmailService::new().await?);
+        let _ = EMAIL_GLOBAL.set(created.clone());
+        Ok(created)
+    }
+
+    async fn create_provider() -> Result<Arc<dyn EmailProvider>> {
         let env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
         
         match env.as_str() {
             "production" => {
                 log::info!("🚀 Initializing SendGrid email provider for production");
-                Ok(Box::new(providers::SendGridProvider::new().await?))
+                Ok(Arc::new(providers::SendGridProvider::new().await?))
             }
             _ => {
                 log::info!("🛠️ Initializing SMTP email provider for development");
-                Ok(Box::new(providers::SmtpProvider::new().await?))
+                Ok(Arc::new(providers::SmtpProvider::new().await?))
             }
         }
     }
 
     pub async fn send_raw_email(&self, request: EmailRequest) -> Result<String> {
-        self.provider.send_email(request).await
+        self.provider.as_ref().send_email(request).await
     }
 
     fn should_use_templates(&self) -> bool {
@@ -109,7 +122,7 @@ impl EmailService {
                 from_name: Some("BlocStage".to_string()),
             };
 
-            let message_id = self.provider.send_template_email(request).await?;
+            let message_id = self.provider.as_ref().send_template_email(request).await?;
             log::info!("✅ Verification email (template) sent to {}: {}", to_email, message_id);
         } else {
             let mut context = HashMap::new();
@@ -133,7 +146,7 @@ impl EmailService {
                 from_name: Some("BlocStage".to_string()),
             };
 
-            let message_id = self.provider.send_email(request).await?;
+            let message_id = self.provider.as_ref().send_email(request).await?;
             log::info!("✅ Verification email sent to {}: {}", to_email, message_id);
         }
         
@@ -164,7 +177,7 @@ impl EmailService {
                 from_name: Some("BlocStage".to_string()),
             };
 
-            let message_id = self.provider.send_template_email(request).await?;
+            let message_id = self.provider.as_ref().send_template_email(request).await?;
             log::info!("✅ Password reset email (template) sent to {}: {}", to_email, message_id);
         } else {
             let mut context = HashMap::new();
@@ -188,7 +201,7 @@ impl EmailService {
                 from_name: Some("BlocStage".to_string()),
             };
 
-            let message_id = self.provider.send_email(request).await?;
+            let message_id = self.provider.as_ref().send_email(request).await?;
             log::info!("✅ Password reset email sent to {}: {}", to_email, message_id);
         }
         
@@ -212,7 +225,7 @@ impl EmailService {
                 from_name: Some("BlocStage".to_string()),
             };
 
-            let message_id = self.provider.send_template_email(request).await?;
+            let message_id = self.provider.as_ref().send_template_email(request).await?;
             log::info!("✅ Welcome email (template) sent to {}: {}", to_email, message_id);
         } else {
             let app_url = std::env::var("APP_URL").unwrap_or_else(|_| "http://localhost:3000".to_string());
@@ -238,7 +251,7 @@ impl EmailService {
                 from_name: Some("BlocStage".to_string()),
             };
 
-            let message_id = self.provider.send_email(request).await?;
+            let message_id = self.provider.as_ref().send_email(request).await?;
             log::info!("✅ Welcome email sent to {}: {}", to_email, message_id);
         }
         
@@ -266,7 +279,7 @@ impl EmailService {
             from_name: Some("BlocStage".to_string()),
         };
 
-        let message_id = self.provider.send_email(request).await?;
+        let message_id = self.provider.as_ref().send_email(request).await?;
         log::info!("✅ Password changed email sent to {}: {}", to_email, message_id);
         
         Ok(())
@@ -293,17 +306,17 @@ impl EmailService {
             from_name: Some("BlocStage".to_string()),
         };
 
-        let message_id = self.provider.send_email(request).await?;
+        let message_id = self.provider.as_ref().send_email(request).await?;
         log::info!("✅ Account deleted email sent to {}: {}", to_email, message_id);
         
         Ok(())
     }
 
     pub async fn health_check(&self) -> Result<bool> {
-        self.provider.health_check().await
+        self.provider.as_ref().health_check().await
     }
 
     pub fn provider_name(&self) -> &'static str {
-        self.provider.provider_name()
+        self.provider.as_ref().provider_name()
     }
 }

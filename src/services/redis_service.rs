@@ -3,6 +3,8 @@ use log::{debug, error, info, warn};
 use redis::{aio::ConnectionManager, AsyncCommands, Client};
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
@@ -62,6 +64,16 @@ impl RedisService {
         info!("✅ Redis connection established successfully");
 
         Ok(Self { connection })
+    }
+
+    pub async fn global() -> Result<Arc<Self>> {
+        static REDIS_GLOBAL: OnceLock<Arc<RedisService>> = OnceLock::new();
+        if let Some(svc) = REDIS_GLOBAL.get() {
+            return Ok(svc.clone());
+        }
+        let created = Arc::new(RedisService::new().await?);
+        let _ = REDIS_GLOBAL.set(created.clone());
+        Ok(created)
     }
 
     // Test Redis connection
