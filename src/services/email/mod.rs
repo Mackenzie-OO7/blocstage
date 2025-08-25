@@ -123,7 +123,7 @@ impl EmailService {
             };
 
             let message_id = self.provider.as_ref().send_template_email(request).await?;
-            log::info!("✅ Verification email (template) sent to {}: {}", to_email, message_id);
+            log::info!("✅ Verification email sent to {}: {}", to_email, message_id);
         } else {
             let mut context = HashMap::new();
             context.insert("first_name", first_name);
