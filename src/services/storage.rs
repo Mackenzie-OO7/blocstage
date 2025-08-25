@@ -38,8 +38,8 @@ impl StorageService {
             .post(&upload_url)
             .header("Authorization", format!("Bearer {}", self.service_key))
             .header("apikey", &self.service_key)
-            .header("Content-Type", "application/pdf")
-            .header("x-upsert", "true") // Allow overwrite if file exists
+            .header("Content-Type", "text/html")
+            .header("x-upsert", "true")
             .body(content)
             .send()
             .await?;

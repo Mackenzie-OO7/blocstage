@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -6,6 +6,13 @@ use std::sync::OnceLock;
 
 pub mod providers;
 pub mod templates;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailAttachment {
+    pub filename: String,
+    pub content: Vec<u8>,
+    pub content_type: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailRequest {
@@ -16,6 +23,7 @@ pub struct EmailRequest {
     pub text_body: Option<String>,
     pub from: String,
     pub from_name: Option<String>,
+    pub attachments: Option<Vec<EmailAttachment>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,27 +84,47 @@ impl EmailService {
     }
 
     async fn create_provider() -> Result<Arc<dyn EmailProvider>> {
-        let env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
-        
-        match env.as_str() {
-            "production" => {
-                log::info!("🚀 Initializing SendGrid email provider for production");
-                Ok(Arc::new(providers::SendGridProvider::new().await?))
-            }
-            _ => {
-                log::info!("🛠️ Initializing SMTP email provider for development");
-                Ok(Arc::new(providers::SmtpProvider::new().await?))
-            }
-        }
+        log::info!("🚀 Initializing SendGrid email provider");
+        Ok(Arc::new(providers::SendGridProvider::new().await?))
     }
 
     pub async fn send_raw_email(&self, request: EmailRequest) -> Result<String> {
         self.provider.as_ref().send_email(request).await
     }
 
+    pub async fn send_ticket_email_with_attachment(&self, to_email: &str, first_name: &str, event_title: &str, pdf_content: Vec<u8>) -> Result<String> {
+        let template_id = std::env::var("SENDGRID_TICKET_TEMPLATE_ID")
+            .map_err(|_| anyhow!("SENDGRID_TICKET_TEMPLATE_ID not configured"))?;
+
+        let attachment = EmailAttachment {
+            filename: format!("BlocStage-Ticket-{}.html", event_title.replace(" ", "-")),
+            content: pdf_content,
+            content_type: "text/html".to_string(),
+        };
+
+        let attachments_json = serde_json::to_string(&vec![attachment])?;
+
+        let mut template_data = HashMap::new();
+        template_data.insert("first_name".to_string(), first_name.to_string());
+        template_data.insert("event_title".to_string(), event_title.to_string());
+        template_data.insert("app_name".to_string(), "BlocStage".to_string());
+        template_data.insert("attachments".to_string(), attachments_json);
+
+        let request = TemplateEmailRequest {
+            to: to_email.to_string(),
+            to_name: Some(first_name.to_string()),
+            template_id,
+            template_data,
+            from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "tickets@blocstage.com".to_string()),
+            from_name: Some("BlocStage".to_string()),
+        };
+
+        let message_id = self.provider.as_ref().send_template_email(request).await?;
+        Ok(message_id)
+    }
+
     fn should_use_templates(&self) -> bool {
-        self.provider.provider_name() == "SendGrid" && 
-        std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()) == "production"
+        self.provider.provider_name() == "SendGrid"
     }
 
     pub async fn send_verification_email(&self, to_email: &str, first_name: &str, token: &str) -> Result<()> {
@@ -144,6 +172,7 @@ impl EmailService {
                 text_body: Some(text_body),
                 from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "no-reply@blocstage.com".to_string()),
                 from_name: Some("BlocStage".to_string()),
+                attachments: None,
             };
 
             let message_id = self.provider.as_ref().send_email(request).await?;
@@ -199,6 +228,7 @@ impl EmailService {
                 text_body: Some(text_body),
                 from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "no-reply@blocstage.com".to_string()),
                 from_name: Some("BlocStage".to_string()),
+                attachments: None,
             };
 
             let message_id = self.provider.as_ref().send_email(request).await?;
@@ -249,6 +279,7 @@ impl EmailService {
                 text_body: Some(text_body),
                 from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "no-reply@blocstage.com".to_string()),
                 from_name: Some("BlocStage".to_string()),
+                attachments: None,
             };
 
             let message_id = self.provider.as_ref().send_email(request).await?;
@@ -277,6 +308,7 @@ impl EmailService {
             text_body: Some(text_body),
             from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "no-reply@blocstage.com".to_string()),
             from_name: Some("BlocStage".to_string()),
+            attachments: None,
         };
 
         let message_id = self.provider.as_ref().send_email(request).await?;
@@ -304,6 +336,7 @@ impl EmailService {
             text_body: Some(text_body),
             from: std::env::var("EMAIL_FROM").unwrap_or_else(|_| "no-reply@blocstage.com".to_string()),
             from_name: Some("BlocStage".to_string()),
+            attachments: None,
         };
 
         let message_id = self.provider.as_ref().send_email(request).await?;

@@ -11,19 +11,9 @@ use crate::services::email::EmailService;
 use anyhow::{anyhow, Result};
 use bigdecimal::{BigDecimal};
 use chrono::{DateTime, Utc};
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::{Message, SmtpTransport, Transport};
 use log::{error, info,};
-#[allow(unused_imports)]
-use printpdf::{Mm, PdfDocument, Point, Rgb};
-// use qrcode::render::svg;
-// use qrcode::QrCode;
 use serde::Serialize;
 use sqlx::{PgPool, Postgres, Transaction as SqlxTransaction};
-use std::env;
-use std::path::Path;
-use tokio::fs::File;
-use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 pub struct TicketService {
@@ -51,7 +41,6 @@ pub struct TicketStatusResponse {
 }
 
 impl TicketService {
-    // Helper functions to reduce repetitive find-and-unwrap patterns
     async fn get_ticket(&self, ticket_id: Uuid) -> Result<Ticket> {
         Ticket::find_by_id(&self.pool, ticket_id)
             .await?
@@ -933,7 +922,7 @@ impl TicketService {
             &owner
         )?;
 
-        let storage_path = format!("tickets/{}/{}.pdf", event.id, ticket.id);
+        let storage_path = format!("tickets/{}/{}.html", event.id, ticket.id);
         let pdf_url = self.storage.upload_pdf(&storage_path, pdf_content.clone()).await?;
 
         let _updated_ticket = ticket.set_pdf_url(&self.pool, &pdf_url).await?;
@@ -944,31 +933,17 @@ impl TicketService {
         Ok(pdf_url)
     }
 
-    async fn send_ticket_email(&self, user: &User, pdf_url: &str, event_title: &str, _pdf_content: Vec<u8>) -> Result<()> {
+    async fn send_ticket_email(&self, user: &User, _pdf_url: &str, event_title: &str, pdf_content: Vec<u8>) -> Result<()> {
         let email_service = EmailService::global().await?;
         
-        let mut template_data = std::collections::HashMap::new();
-        template_data.insert("first_name".to_string(), user.first_name.as_deref().unwrap_or(&user.username).to_string());
-        template_data.insert("event_title".to_string(), event_title.to_string());
-        template_data.insert("pdf_url".to_string(), pdf_url.to_string());
-        template_data.insert("app_name".to_string(), "BlocStage".to_string());
-        template_data.insert("app_url".to_string(), env::var("APP_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()));
-
-        let template_id = env::var("SENDGRID_TICKET_TEMPLATE_ID")
-            .unwrap_or_else(|_| "d-your-ticket-template-id".to_string());
-
-        let template_request = crate::services::email::TemplateEmailRequest {
-            to: user.email.clone(),
-            to_name: user.first_name.clone().or_else(|| Some(user.username.clone())),
-            template_id,
-            template_data,
-            from: env::var("EMAIL_FROM").unwrap_or_else(|_| "tickets@blocstage.com".to_string()),
-            from_name: Some("BlocStage".to_string()),
-        };
-
-        email_service.provider.as_ref().send_template_email(template_request).await?;
+        let _message_id = email_service.send_ticket_email_with_attachment(
+            &user.email,
+            &user.first_name,
+            event_title,
+            pdf_content
+        ).await?;
         
-        info!("✅ Ticket email sent to: {}", user.email);
+        info!("✅ Ticket email with PDF attachment sent using SendGrid template to: {}", user.email);
         Ok(())
     }
 

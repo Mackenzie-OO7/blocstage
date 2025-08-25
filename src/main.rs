@@ -104,6 +104,12 @@ async fn main(
         "SENDGRID_TEMPLATE_WELCOME",
         "SENDGRID_TEMPLATE_PASSWORD_CHANGED",
         "SENDGRID_TEMPLATE_ACCOUNT_DELETED",
+        "SENDGRID_TICKET_TEMPLATE_ID",
+        "STORAGE_URL",
+        "SUPABASE_URL",
+        "STORAGE_SERVICE_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "STORAGE_BUCKET",
     ] {
         if let Some(value) = secrets.get(key) {
             std::env::set_var(key, value);
