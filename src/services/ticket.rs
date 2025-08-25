@@ -5,6 +5,9 @@ use crate::services::stellar::StellarService;
 use crate::services::sponsor_manager::SponsorManager;
 use crate::services::fee_calculator::FeeCalculator;
 use crate::services::payment_orchestrator::PaymentOrchestrator;
+use crate::services::storage::StorageService;
+use crate::services::pdf_generator::PdfGenerator;
+use crate::services::email::EmailService;
 use anyhow::{anyhow, Result};
 use bigdecimal::{BigDecimal};
 use chrono::{DateTime, Utc};
@@ -29,6 +32,8 @@ pub struct TicketService {
     sponsor_manager: SponsorManager,
     fee_calculator: FeeCalculator,
     payment_orchestrator: PaymentOrchestrator,
+    storage: StorageService,
+    pdf_generator: PdfGenerator,
 }
 
 #[derive(Debug, Serialize)]
@@ -79,6 +84,8 @@ impl TicketService {
             sponsor_manager.clone(),
             fee_calculator.clone(),
         )?;
+        let storage = StorageService::new()?;
+        let pdf_generator = PdfGenerator::new();
         
         Ok(Self {
             pool,
@@ -86,6 +93,8 @@ impl TicketService {
             sponsor_manager,
             fee_calculator,
             payment_orchestrator,
+            storage,
+            pdf_generator,
         })
     }
 
@@ -135,6 +144,14 @@ impl TicketService {
             "Free ticket claimed successfully: ticket_id={}, user_id={}",
             ticket.id, user_id
         );
+
+        let ticket_service = Self::new(self.pool.clone()).await?;
+        let ticket_id = ticket.id;
+        tokio::spawn(async move {
+            if let Err(e) = ticket_service.generate_pdf_ticket(ticket_id).await {
+                error!("Failed to generate PDF for free ticket {}: {}", ticket_id, e);
+            }
+        });
 
         Ok(ticket)
     }
@@ -476,6 +493,14 @@ impl TicketService {
             "✅ Ticket purchase completed: {} (tx: {})",
             ticket.id, payment_result.transaction_hash
         );
+
+        let ticket_service = Self::new(self.pool.clone()).await?;
+        let ticket_id = ticket.id;
+        tokio::spawn(async move {
+            if let Err(e) = ticket_service.generate_pdf_ticket(ticket_id).await {
+                error!("Failed to generate PDF for purchased ticket {}: {}", ticket_id, e);
+            }
+        });
 
         Ok((ticket, completed_transaction))
     }
@@ -857,98 +882,93 @@ impl TicketService {
         Ok(ticket)
     }
 
-    pub async fn generate_pdf_ticket(&self, ticket_id: Uuid) -> Result<String> {
+    pub async fn web_check_in_ticket(&self, ticket_id: Uuid) -> Result<Ticket> {
         let ticket = self.get_ticket(ticket_id).await?;
-
         let ticket_type = self.get_ticket_type(ticket.ticket_type_id).await?;
-
         let event = self.get_event(ticket_type.event_id).await?;
 
+        if ticket.status != "valid" {
+            return Err(anyhow!("Ticket is not valid for check-in (status: {})", ticket.status));
+        }
+
+        if ticket.checked_in_at.is_some() {
+            return Err(anyhow!("Ticket has already been used"));
+        }
+
+        let now = Utc::now();
+        let check_in_opens = event.start_time - chrono::Duration::hours(1);
+        
+        if now < check_in_opens {
+            let opens_in = (check_in_opens - now).num_minutes();
+            return Err(anyhow!("Check-in opens {} minutes before event start (in {} minutes)", 60, opens_in));
+        }
+
+        if now > event.end_time {
+            return Err(anyhow!("Event has already ended"));
+        }
+
+        if let Some(transaction) = Transaction::find_by_ticket(&self.pool, ticket_id).await? {
+            if transaction.status != "completed" {
+                return Err(anyhow!("Ticket payment is not completed"));
+            }
+        }
+
+        let system_user_id = Uuid::nil(); // You might want to create a system user ID
+        let checked_in_ticket = ticket.check_in(&self.pool, system_user_id).await?;
+
+        info!("✅ Web check-in successful for ticket: {}", ticket_id);
+        Ok(checked_in_ticket)
+    }
+
+    pub async fn generate_pdf_ticket(&self, ticket_id: Uuid) -> Result<String> {
+        let ticket = self.get_ticket(ticket_id).await?;
+        let ticket_type = self.get_ticket_type(ticket.ticket_type_id).await?;
+        let event = self.get_event(ticket_type.event_id).await?;
         let owner = self.get_user(ticket.owner_id).await?;
 
-        let pdf_content = self.create_pdf_document(&ticket, &ticket_type, &event, &owner)?;
+        let pdf_content = self.pdf_generator.generate_ticket_pdf(
+            &ticket, 
+            &ticket_type, 
+            &event, 
+            &owner
+        )?;
 
         let storage_path = format!("tickets/{}/{}.pdf", event.id, ticket.id);
-        let pdf_url = self.upload_to_storage(&storage_path, pdf_content).await?;
+        let pdf_url = self.storage.upload_pdf(&storage_path, pdf_content.clone()).await?;
 
-        #[allow(unused_variables)]
-        let updated_ticket = ticket.set_pdf_url(&self.pool, &pdf_url).await?;
+        let _updated_ticket = ticket.set_pdf_url(&self.pool, &pdf_url).await?;
 
-        self.send_ticket_email(&owner.email, &pdf_url, &event.title)
-            .await?;
+        self.send_ticket_email(&owner, &pdf_url, &event.title, pdf_content).await?;
 
+        info!("✅ PDF ticket generated and sent for ticket: {}", ticket_id);
         Ok(pdf_url)
     }
 
-    fn create_pdf_document(
-        &self,
-        _ticket: &Ticket,
-        _ticket_type: &TicketType,
-        event: &Event,
-        owner: &User,
-    ) -> Result<Vec<u8>> {
-        // TODO: return empty PDF until we can resolve the API issues
-        let message = format!("Ticket for {} - Event: {}", owner.username, event.title);
+    async fn send_ticket_email(&self, user: &User, pdf_url: &str, event_title: &str, _pdf_content: Vec<u8>) -> Result<()> {
+        let email_service = EmailService::global().await?;
+        
+        let mut template_data = std::collections::HashMap::new();
+        template_data.insert("first_name".to_string(), user.first_name.as_deref().unwrap_or(&user.username).to_string());
+        template_data.insert("event_title".to_string(), event_title.to_string());
+        template_data.insert("pdf_url".to_string(), pdf_url.to_string());
+        template_data.insert("app_name".to_string(), "BlocStage".to_string());
+        template_data.insert("app_url".to_string(), env::var("APP_URL").unwrap_or_else(|_| "http://localhost:3000".to_string()));
 
-        // return the message as bytes for now
-        Ok(message.into_bytes())
-    }
+        let template_id = env::var("SENDGRID_TICKET_TEMPLATE_ID")
+            .unwrap_or_else(|_| "d-your-ticket-template-id".to_string());
 
-    async fn upload_to_storage(&self, path: &str, content: Vec<u8>) -> Result<String> {
-        let storage_dir =
-            env::var("LOCAL_STORAGE_DIR").unwrap_or_else(|_| "storage".to_string());
+        let template_request = crate::services::email::TemplateEmailRequest {
+            to: user.email.clone(),
+            to_name: user.first_name.clone().or_else(|| Some(user.username.clone())),
+            template_id,
+            template_data,
+            from: env::var("EMAIL_FROM").unwrap_or_else(|_| "tickets@blocstage.com".to_string()),
+            from_name: Some("BlocStage".to_string()),
+        };
 
-        let path_obj = Path::new(&storage_dir).join(path);
-        if let Some(parent) = path_obj.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
-        let mut file = File::create(&path_obj).await?;
-        file.write_all(&content).await?;
-
-        let app_url = env::var("APP_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
-        return Ok(format!("{}/storage/{}", app_url, path));
-    }
-
-    // TODO: configure email for ticket purchase with PDF attachment (&QR code)
-    async fn send_ticket_email(&self, email: &str, pdf_url: &str, event_title: &str) -> Result<()> {
-        let email_body = format!(
-            "Thank you for your purchase!\n\n\
-            Your ticket for {} is attached.\n\n\
-            You can also download your ticket here: {}\n\n\
-            Enjoy the event!",
-            event_title, pdf_url
-        );
-
-        let email = Message::builder()
-            .from(
-                env::var("EMAIL_FROM")
-                    .unwrap_or_else(|_| "tickets@example.com".to_string())
-                    .parse()?,
-            )
-            .to(email.parse()?)
-            .subject(format!("Your Ticket for {}", event_title))
-            .body(email_body)?;
-
-        // in dev, log the email
-        if env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()) != "production" {
-            info!("Would send email with ticket: {}", pdf_url);
-            return Ok(());
-        }
-
-        // in prod, send via SMTP
-        let smtp_server = env::var("SMTP_SERVER")?;
-        let smtp_username = env::var("SMTP_USERNAME")?;
-        let smtp_password = env::var("SMTP_PASSWORD")?;
-
-        let creds = Credentials::new(smtp_username, smtp_password);
-
-        let mailer = SmtpTransport::relay(&smtp_server)?
-            .credentials(creds)
-            .build();
-
-        mailer.send(&email)?;
-
+        email_service.provider.as_ref().send_template_email(template_request).await?;
+        
+        info!("✅ Ticket email sent to: {}", user.email);
         Ok(())
     }
 

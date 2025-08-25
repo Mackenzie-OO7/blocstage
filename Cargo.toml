@@ -50,6 +50,8 @@ deadpool-redis = "0.22.0"
 async-trait = "0.1.88"
 actix-multipart = "0.7.2"
 futures-util = "0.3.31"
+image = "0.25.5"
+postgrest = "1.6.0"
 shuttle-runtime = "0.56.0"
 shuttle-actix-web =  "0.56.0"
 shuttle-shared-db = { version = "0.56.0", features = ["postgres"] }

@@ -31,6 +31,7 @@ pub struct AdminCancelTicketRequest {
     reason: String,
 }
 
+
 async fn create_ticket(pool: &PgPool) -> Result<TicketService> {
     TicketService::new(pool.clone()).await
 }

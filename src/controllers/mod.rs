@@ -1,5 +1,6 @@
 pub mod admin_filters;
 pub mod auth;
+pub mod check_in;
 pub mod event;
 pub mod ticket;
 pub mod transaction;
@@ -13,6 +14,7 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
         web::scope("")
             .route("/", web::get().to(crate::api_info))
             .configure(auth::configure)
+            .configure(check_in::configure)
             .configure(ticket::configure)
             .configure(event::configure)
             .configure(transaction::configure)
