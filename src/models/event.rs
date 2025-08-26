@@ -5,6 +5,50 @@ use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgArguments, Arguments, PgPool};
 use uuid::Uuid;
 
+mod flexible_datetime {
+    use chrono::{DateTime, NaiveDateTime, Utc};
+    use serde::{self, Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        
+        if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
+            return Ok(dt.with_timezone(&Utc));
+        }
+        
+        if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
+            return Ok(DateTime::from_naive_utc_and_offset(naive_dt, Utc));
+        }
+        
+        Err(serde::de::Error::custom(format!("Invalid datetime format: {}", s)))
+    }
+
+    pub fn deserialize_option<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt = Option::<String>::deserialize(deserializer)?;
+        match opt {
+            Some(s) => {
+                // Try RFC3339 first
+                if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
+                    return Ok(Some(dt.with_timezone(&Utc)));
+                }
+                
+                if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
+                    return Ok(Some(DateTime::from_naive_utc_and_offset(naive_dt, Utc)));
+                }
+                
+                Err(serde::de::Error::custom(format!("Invalid datetime format: {}", s)))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
 pub struct Event {
     pub id: Uuid,
@@ -49,7 +93,9 @@ pub struct EventWithSessions {
 #[derive(Debug, Deserialize)]
 pub struct CreateEventSessionRequest {
     pub title: String,
+    #[serde(deserialize_with = "flexible_datetime::deserialize")]
     pub start_time: DateTime<Utc>,
+    #[serde(deserialize_with = "flexible_datetime::deserialize")]
     pub end_time: DateTime<Utc>,
     pub speaker_name: Option<String>,
     pub speaker_user_id: Option<Uuid>,
@@ -59,7 +105,9 @@ pub struct CreateEventSessionRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateEventSessionRequest {
     pub title: Option<String>,
+    #[serde(deserialize_with = "flexible_datetime::deserialize_option")]
     pub start_time: Option<DateTime<Utc>>,
+    #[serde(deserialize_with = "flexible_datetime::deserialize_option")]
     pub end_time: Option<DateTime<Utc>>,
     pub speaker_name: Option<String>,
     pub speaker_user_id: Option<Uuid>,
@@ -71,7 +119,9 @@ pub struct CreateEventRequest {
     pub title: String,
     pub description: Option<String>,
     pub location: Option<String>,
+    #[serde(deserialize_with = "flexible_datetime::deserialize")]
     pub start_time: DateTime<Utc>,
+    #[serde(deserialize_with = "flexible_datetime::deserialize")]
     pub end_time: DateTime<Utc>,
     pub banner_image_url: Option<String>,
     pub category: Option<String>,
@@ -84,7 +134,9 @@ pub struct UpdateEventRequest {
     pub title: Option<String>,
     pub description: Option<String>,
     pub location: Option<String>,
+    #[serde(deserialize_with = "flexible_datetime::deserialize_option")]
     pub start_time: Option<DateTime<Utc>>,
+    #[serde(deserialize_with = "flexible_datetime::deserialize_option")]
     pub end_time: Option<DateTime<Utc>>,
     pub banner_image_url: Option<String>,
     pub category: Option<String>,
@@ -96,7 +148,9 @@ pub struct SearchEventsRequest {
     pub query: Option<String>,
     pub category: Option<String>,
     pub location: Option<String>,
+    #[serde(deserialize_with = "flexible_datetime::deserialize_option")]
     pub start_date: Option<DateTime<Utc>>,
+    #[serde(deserialize_with = "flexible_datetime::deserialize_option")]
     pub end_date: Option<DateTime<Utc>>,
     pub tags: Option<Vec<String>>,
     pub limit: Option<i64>,
