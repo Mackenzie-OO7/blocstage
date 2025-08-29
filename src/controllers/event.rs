@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
-    error: String,
+    message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,11 +75,11 @@ pub async fn create_event(
             } else if e.to_string().contains("check constraint") {
                 "Invalid event data format."
             } else {
-                &format!("Database error: {}", e)
+                &format!("Database message: {}", e)
             };
 
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: error_message.to_string(),
+                message: error_message.to_string(),
             })
         }
     }
@@ -112,17 +112,17 @@ pub async fn update_event(
             Err(e) => {
                 error!("Failed to update event: {}", e);
                 HttpResponse::InternalServerError().json(ErrorResponse {
-                    error: "Failed to update event. Please try again.".to_string(),
+                    message: "Failed to update event. Please try again.".to_string(),
                 })
             }
         },
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "Event not found".to_string(),
+            message: "Event not found".to_string(),
         }),
         Err(e) => {
             error!("Failed to fetch event for update: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch event. Please try again.".to_string(),
+                message: "Failed to fetch event. Please try again.".to_string(),
             })
         }
     }
@@ -149,7 +149,7 @@ pub async fn cancel_event(
         Err(e) => {
             error!("Failed to cancel event: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to cancel event. Please try again.".to_string(),
+                message: "Failed to cancel event. Please try again.".to_string(),
             })
         }
     }
@@ -160,12 +160,12 @@ pub async fn get_event(pool: web::Data<PgPool>, event_id: web::Path<Uuid>) -> im
     match Event::find_by_id(&pool, *event_id).await {
         Ok(Some(event)) => HttpResponse::Ok().json(event),
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "Event not found".to_string(),
+            message: "Event not found".to_string(),
         }),
         Err(e) => {
             error!("Failed to fetch event: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch event. Please try again.".to_string(),
+                message: "Failed to fetch event. Please try again.".to_string(),
             })
         }
     }
@@ -180,7 +180,7 @@ pub async fn search_events(
         Err(e) => {
             error!("Failed to search events: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to search events. Please try again.".to_string(),
+                message: "Failed to search events. Please try again.".to_string(),
             })
         }
     }
@@ -206,7 +206,7 @@ pub async fn get_all_events(
         Err(e) => {
             error!("Failed to fetch all events: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch events. Please try again.".to_string(),
+                message: "Failed to fetch events. Please try again.".to_string(),
             })
         }
     }
@@ -226,7 +226,7 @@ pub async fn get_events_by_organizer(
                 user.id, e
             );
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch events. Please try again.".to_string(),
+                message: "Failed to fetch events. Please try again.".to_string(),
             })
         }
     }
@@ -248,7 +248,7 @@ pub async fn get_event_analytics(
         Err(e) => {
             error!("Failed to fetch event analytics: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch event analytics. Please try again.".to_string(),
+                message: "Failed to fetch event analytics. Please try again.".to_string(),
             });
         }
     };
@@ -301,13 +301,13 @@ pub async fn get_event_organizers(
     match EventOrganizer::is_organizer(&pool, *event_id, user.id).await {
         Ok(false) => {
             return HttpResponse::Forbidden().json(ErrorResponse {
-                error: "Only event organizers can view organizer list".to_string(),
+                message: "Only event organizers can view organizer list".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to check organizer status: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to verify permissions".to_string(),
+                message: "Failed to verify permissions".to_string(),
             });
         }
         Ok(true) => {}
@@ -329,7 +329,7 @@ pub async fn get_event_organizers(
         Err(e) => {
             error!("Failed to fetch event organizers: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch organizers".to_string(),
+                message: "Failed to fetch organizers".to_string(),
             })
         }
     }
@@ -344,13 +344,13 @@ pub async fn add_event_organizer(
     match EventOrganizer::is_organizer(&pool, *event_id, user.id).await {
         Ok(false) => {
             return HttpResponse::Forbidden().json(ErrorResponse {
-                error: "Only existing organizers can add new organizers".to_string(),
+                message: "Only existing organizers can add new organizers".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to check organizer status: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to verify permissions".to_string(),
+                message: "Failed to verify permissions".to_string(),
             });
         }
         Ok(true) => {}
@@ -361,13 +361,13 @@ pub async fn add_event_organizer(
             Ok(Some(user_id)) => user_id,
             Ok(None) => {
                 return HttpResponse::NotFound().json(ErrorResponse {
-                    error: format!("User not found: {}", organizer_data.identifier),
+                    message: format!("User not found: {}", organizer_data.identifier),
                 });
             }
             Err(e) => {
                 error!("Failed to find user: {}", e);
                 return HttpResponse::InternalServerError().json(ErrorResponse {
-                    error: "Failed to search for user".to_string(),
+                    message: "Failed to search for user".to_string(),
                 });
             }
         };
@@ -396,7 +396,7 @@ pub async fn add_event_organizer(
             };
 
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: error_message.to_string(),
+                message: error_message.to_string(),
             })
         }
     }
@@ -412,13 +412,13 @@ pub async fn remove_event_organizer(
     match EventOrganizer::is_owner(&pool, event_id, user.id).await {
         Ok(false) => {
             return HttpResponse::Forbidden().json(ErrorResponse {
-                error: "Only the event owner can remove organizers".to_string(),
+                message: "Only the event owner can remove organizers".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to check owner status: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to verify permissions".to_string(),
+                message: "Failed to verify permissions".to_string(),
             });
         }
         Ok(true) => {}
@@ -447,7 +447,7 @@ pub async fn remove_event_organizer(
             };
 
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: error_message.to_string(),
+                message: error_message.to_string(),
             })
         }
     }
@@ -464,13 +464,13 @@ pub async fn update_organizer_permissions(
     match EventOrganizer::is_owner(&pool, event_id, user.id).await {
         Ok(false) => {
             return HttpResponse::Forbidden().json(ErrorResponse {
-                error: "Only the event owner can update organizer permissions".to_string(),
+                message: "Only the event owner can update organizer permissions".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to check owner status: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to verify permissions".to_string(),
+                message: "Failed to verify permissions".to_string(),
             });
         }
         Ok(true) => {}
@@ -508,7 +508,7 @@ pub async fn update_organizer_permissions(
             };
 
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: error_message.to_string(),
+                message: error_message.to_string(),
             })
         }
     }
@@ -521,12 +521,12 @@ pub async fn get_event_with_sessions(
     match Event::find_by_id_with_sessions(&pool, *event_id).await {
         Ok(Some(event_with_sessions)) => HttpResponse::Ok().json(event_with_sessions),
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "Event not found".to_string(),
+            message: "Event not found".to_string(),
         }),
         Err(e) => {
             error!("Failed to fetch event with sessions: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch event. Please try again.".to_string(),
+                message: "Failed to fetch event. Please try again.".to_string(),
             })
         }
     }
@@ -542,17 +542,17 @@ pub async fn get_event_sessions(
             Err(e) => {
                 error!("Failed to fetch event sessions: {}", e);
                 HttpResponse::InternalServerError().json(ErrorResponse {
-                    error: "Failed to fetch sessions".to_string(),
+                    message: "Failed to fetch sessions".to_string(),
                 })
             }
         },
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "Event not found".to_string(),
+            message: "Event not found".to_string(),
         }),
         Err(e) => {
             error!("Failed to fetch event: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch event".to_string(),
+                message: "Failed to fetch event".to_string(),
             })
         }
     }
@@ -600,7 +600,7 @@ pub async fn create_event_session(
             };
 
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: error_message.to_string(),
+                message: error_message.to_string(),
             })
         }
     }
@@ -630,20 +630,20 @@ pub async fn update_event_session(
         Ok(Some(session)) => {
             if session.event_id != event_id {
                 return HttpResponse::NotFound().json(ErrorResponse {
-                    error: "Session not found for this event".to_string(),
+                    message: "Session not found for this event".to_string(),
                 });
             }
             session
         }
         Ok(None) => {
             return HttpResponse::NotFound().json(ErrorResponse {
-                error: "Session not found".to_string(),
+                message: "Session not found".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to fetch session: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch session".to_string(),
+                message: "Failed to fetch session".to_string(),
             });
         }
     };
@@ -659,7 +659,7 @@ pub async fn update_event_session(
         Err(e) => {
             error!("Failed to update session: {}", e);
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: "Failed to update session".to_string(),
+                message: "Failed to update session".to_string(),
             })
         }
     }
@@ -688,20 +688,20 @@ pub async fn delete_event_session(
         Ok(Some(session)) => {
             if session.event_id != event_id {
                 return HttpResponse::NotFound().json(ErrorResponse {
-                    error: "Session not found for this event".to_string(),
+                    message: "Session not found for this event".to_string(),
                 });
             }
             session
         }
         Ok(None) => {
             return HttpResponse::NotFound().json(ErrorResponse {
-                error: "Session not found".to_string(),
+                message: "Session not found".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to fetch session: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch session".to_string(),
+                message: "Failed to fetch session".to_string(),
             });
         }
     };
@@ -719,7 +719,7 @@ pub async fn delete_event_session(
         Err(e) => {
             error!("Failed to delete session: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to delete session".to_string(),
+                message: "Failed to delete session".to_string(),
             })
         }
     }
@@ -756,7 +756,7 @@ pub async fn reorder_event_sessions(
         Err(e) => {
             error!("Failed to reorder sessions: {}", e);
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: "Failed to reorder sessions".to_string(),
+                message: "Failed to reorder sessions".to_string(),
             })
         }
     }
@@ -786,20 +786,20 @@ pub async fn upload_session_file(
         Ok(Some(session)) => {
             if session.event_id != event_id {
                 return HttpResponse::NotFound().json(ErrorResponse {
-                    error: "Session not found for this event".to_string(),
+                    message: "Session not found for this event".to_string(),
                 });
             }
             session
         }
         Ok(None) => {
             return HttpResponse::NotFound().json(ErrorResponse {
-                error: "Session not found".to_string(),
+                message: "Session not found".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to fetch session: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch session".to_string(),
+                message: "Failed to fetch session".to_string(),
             });
         }
     };
@@ -810,7 +810,7 @@ pub async fn upload_session_file(
             Err(e) => {
                 error!("Failed to read multipart field: {}", e);
                 return HttpResponse::BadRequest().json(ErrorResponse {
-                    error: "Invalid file upload".to_string(),
+                    message: "Invalid file upload".to_string(),
                 });
             }
         };
@@ -840,7 +840,7 @@ pub async fn upload_session_file(
 
             if !allowed_extensions.contains(&file_extension.as_str()) {
                 return HttpResponse::BadRequest().json(ErrorResponse {
-                    error: "File type not allowed. Allowed types: PDF, DOC, DOCX, PPT, PPTX, TXT, JPG, JPEG, PNG".to_string(),
+                    message: "File type not allowed. Allowed types: PDF, DOC, DOCX, PPT, PPTX, TXT, JPG, JPEG, PNG".to_string(),
                 });
             }
 
@@ -868,7 +868,7 @@ pub async fn upload_session_file(
                         Err(e) => {
                             error!("Failed to update session with file URL: {}", e);
                             return HttpResponse::InternalServerError().json(ErrorResponse {
-                                error: "File uploaded but failed to link to session".to_string(),
+                                message: "File uploaded but failed to link to session".to_string(),
                             });
                         }
                     }
@@ -876,7 +876,7 @@ pub async fn upload_session_file(
                 Err(e) => {
                     error!("Failed to save session file: {}", e);
                     return HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to upload file".to_string(),
+                        message: "Failed to upload file".to_string(),
                     });
                 }
             }
@@ -884,7 +884,7 @@ pub async fn upload_session_file(
     }
 
     HttpResponse::BadRequest().json(ErrorResponse {
-        error: "No file provided".to_string(),
+        message: "No file provided".to_string(),
     })
 }
 
@@ -935,13 +935,13 @@ pub async fn admin_cancel_any_event(
         Ok(Some(event)) => event,
         Ok(None) => {
             return HttpResponse::NotFound().json(ErrorResponse {
-                error: "Event not found".to_string(),
+                message: "Event not found".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to fetch event for admin cancellation: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch event".to_string(),
+                message: "Failed to fetch event".to_string(),
             });
         }
     };
@@ -959,7 +959,7 @@ pub async fn admin_cancel_any_event(
         Err(e) => {
             error!("Failed to cancel event as admin: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to cancel event".to_string(),
+                message: "Failed to cancel event".to_string(),
             })
         }
     }
@@ -979,13 +979,13 @@ pub async fn admin_get_event_details(
         Ok(Some(event)) => event,
         Ok(None) => {
             return HttpResponse::NotFound().json(ErrorResponse {
-                error: "Event not found".to_string(),
+                message: "Event not found".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to fetch event for admin: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch event".to_string(),
+                message: "Failed to fetch event".to_string(),
             });
         }
     };
@@ -1046,7 +1046,7 @@ pub async fn admin_get_all_events(
         Err(e) => {
             error!("Failed to fetch filtered events for admin: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch events".to_string(),
+                message: "Failed to fetch events".to_string(),
             })
         }
     }
@@ -1313,7 +1313,7 @@ pub async fn get_event_financial_summary(
         Err(e) => {
             error!("Failed to get event financial summary: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch financial summary".to_string(),
+                message: "Failed to fetch financial summary".to_string(),
             })
         }
     }
@@ -1341,14 +1341,14 @@ pub async fn pay_organizer(
         Err(e) => {
             error!("Failed to check existing payout: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to verify payout status".to_string(),
+                message: "Failed to verify payout status".to_string(),
             });
         }
     };
 
     if existing_payout.is_some() {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Event has already been paid out".to_string(),
+            message: "Event has already been paid out".to_string(),
         });
     }
 
@@ -1379,7 +1379,7 @@ pub async fn pay_organizer(
         Err(e) => {
             error!("Failed to calculate event revenue: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to calculate event revenue".to_string(),
+                message: "Failed to calculate event revenue".to_string(),
             });
         }
     };
@@ -1391,7 +1391,7 @@ pub async fn pay_organizer(
 
     if total_revenue_usdc <= 0.0 {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "No revenue available for payout".to_string(),
+            message: "No revenue available for payout".to_string(),
         });
     }
 
@@ -1399,13 +1399,13 @@ pub async fn pay_organizer(
         Ok(Some(event)) => event,
         Ok(None) => {
             return HttpResponse::NotFound().json(ErrorResponse {
-                error: "Event not found".to_string(),
+                message: "Event not found".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to fetch event: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch event".to_string(),
+                message: "Failed to fetch event".to_string(),
             });
         }
     };
@@ -1414,13 +1414,13 @@ pub async fn pay_organizer(
         Ok(Some(organizer)) => organizer,
         Ok(None) => {
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Event organizer not found".to_string(),
+                message: "Event organizer not found".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to fetch organizer: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch organizer".to_string(),
+                message: "Failed to fetch organizer".to_string(),
             });
         }
     };
@@ -1429,7 +1429,7 @@ pub async fn pay_organizer(
         Some(wallet) => wallet.clone(),
         None => {
             return HttpResponse::BadRequest().json(ErrorResponse {
-                error: "Organizer does not have a Stellar wallet".to_string(),
+                message: "Organizer does not have a Stellar wallet".to_string(),
             });
         }
     };
@@ -1439,7 +1439,7 @@ pub async fn pay_organizer(
         Err(e) => {
             error!("Failed to initialize Stellar service: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to initialize payment service".to_string(),
+                message: "Failed to initialize payment service".to_string(),
             });
         }
     };
@@ -1450,7 +1450,7 @@ pub async fn pay_organizer(
         .unwrap_or(false)
     {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Organizer needs to set up USDC trustline first".to_string(),
+            message: "Organizer needs to set up USDC trustline first".to_string(),
         });
     }
 
@@ -1459,7 +1459,7 @@ pub async fn pay_organizer(
         Err(_) => {
             error!("Platform payment secret not configured");
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Payment system not configured".to_string(),
+                message: "Payment system not configured".to_string(),
             });
         }
     };
@@ -1483,7 +1483,7 @@ pub async fn pay_organizer(
                 "Failed to process payment"
             };
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: error_message.to_string(),
+                message: error_message.to_string(),
             });
         }
     };
@@ -1509,7 +1509,7 @@ pub async fn pay_organizer(
         error!("Failed to record payout: {}", e);
         // Payment succeeded but recording failed(this is critical)
         return HttpResponse::InternalServerError().json(ErrorResponse {
-            error: "Payment processed but failed to record. Contact support.".to_string(),
+            message: "Payment processed but failed to record. Contact support.".to_string(),
         });
     }
 

@@ -16,7 +16,7 @@ use std::fmt;
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
-    error: String,
+    message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,7 +26,7 @@ struct SuccessResponse {
 
 impl fmt::Display for ErrorResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.error)
+        write!(f, "{}", self.message)
     }
 }
 
@@ -46,19 +46,19 @@ pub async fn register(
         || user_data.last_name.trim().is_empty()
     {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "All fields are required.".to_string(),
+            message: "All fields are required.".to_string(),
         });
     }
 
     if !user_data.email.contains('@') {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Invalid email format.".to_string(),
+            message: "Invalid email format.".to_string(),
         });
     }
 
     if user_data.password.len() < 8 {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Password must be at least 8 characters long.".to_string(),
+            message: "Password must be at least 8 characters long.".to_string(),
         });
     }
 
@@ -99,7 +99,7 @@ pub async fn register(
             };
 
             status_code.json(ErrorResponse {
-                error: error_message.to_string(),
+                message: error_message.to_string(),
             })
         }
     }
@@ -150,11 +150,11 @@ pub async fn login(
 
             if e.to_string().contains("Too many login attempts. Wait a minute, or 15!") {
                 HttpResponse::TooManyRequests().json(ErrorResponse {
-                    error: error_message.to_string(),
+                    message: error_message.to_string(),
                 })
             } else {
                 HttpResponse::Unauthorized().json(ErrorResponse {
-                    error: error_message.to_string(),
+                    message: error_message.to_string(),
                 })
             }
         }
@@ -176,14 +176,14 @@ pub async fn verify_email(
     if data.token.trim().is_empty() {
         warn!("❌ Email verification failed: Empty token provided");
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Verification token is required.".to_string(),
+            message: "Verification token is required.".to_string(),
         });
     }
 
     if data.token.len() < 32 || data.token.len() > 255 {
         warn!("❌ Email verification failed: Invalid token length");
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Invalid verification token format.".to_string(),
+            message: "Invalid verification token format.".to_string(),
         });
     }
 
@@ -225,7 +225,7 @@ pub async fn verify_email(
             };
 
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: error_message.to_string(),
+                message: error_message.to_string(),
             })
         }
     }
@@ -242,13 +242,13 @@ pub async fn request_password_reset(
 
     if data.email.trim().is_empty() {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Email is required.".to_string(),
+            message: "Email is required.".to_string(),
         });
     }
 
     if !data.email.contains('@') || data.email.len() > 255 {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Invalid email format.".to_string(),
+            message: "Invalid email format.".to_string(),
         });
     }
 
@@ -275,11 +275,11 @@ pub async fn request_password_reset(
 
             if e.to_string().contains("wait before requesting") {
                 HttpResponse::TooManyRequests().json(ErrorResponse {
-                    error: "Please wait before requesting another password reset.".to_string(),
+                    message: "Please wait before requesting another password reset.".to_string(),
                 })
             } else if e.to_string().contains("verify your email") {
                 HttpResponse::BadRequest().json(ErrorResponse {
-                    error: "Please verify your email before requesting password reset.".to_string(),
+                    message: "Please verify your email before requesting password reset.".to_string(),
                 })
             } else {
                 HttpResponse::Ok().json(SuccessResponse {
@@ -305,32 +305,32 @@ pub async fn reset_password(
 
     if data.token.trim().is_empty() {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Reset token is required.".to_string(),
+            message: "Reset token is required.".to_string(),
         });
     }
 
     if data.new_password.trim().is_empty() {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "New password is required.".to_string(),
+            message: "New password is required.".to_string(),
         });
     }
 
     if data.token.len() < 32 || data.token.len() > 255 {
         warn!("❌ Password reset failed: Invalid token length");
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Invalid reset token format.".to_string(),
+            message: "Invalid reset token format.".to_string(),
         });
     }
 
     if data.new_password.len() < 8 {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Password must be at least 8 characters long.".to_string(),
+            message: "Password must be at least 8 characters long.".to_string(),
         });
     }
 
     if data.new_password.len() > 128 {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Password must be less than 128 characters.".to_string(),
+            message: "Password must be less than 128 characters.".to_string(),
         });
     }
 
@@ -362,7 +362,7 @@ pub async fn reset_password(
             };
 
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: error_message.to_string(),
+                message: error_message.to_string(),
             })
         }
     }
@@ -381,13 +381,13 @@ pub async fn logout(
             Ok(auth_str) if auth_str.starts_with("Bearer ") => &auth_str[7..],
             _ => {
                 return HttpResponse::BadRequest().json(ErrorResponse {
-                    error: "Invalid authorization header".to_string(),
+                    message: "Invalid authorization header".to_string(),
                 });
             }
         },
         None => {
             return HttpResponse::BadRequest().json(ErrorResponse {
-                error: "Authorization header required".to_string(),
+                message: "Authorization header required".to_string(),
             });
         }
     };
@@ -409,7 +409,7 @@ pub async fn logout(
         Err(e) => {
             error!("Logout failed: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to logout. Please try again.".to_string(),
+                message: "Failed to logout. Please try again.".to_string(),
             })
         }
     }
@@ -439,7 +439,7 @@ pub async fn logout_all(
         Err(e) => {
             error!("Logout all failed: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to logout from all devices. Please try again.".to_string(),
+                message: "Failed to logout from all devices. Please try again.".to_string(),
             })
         }
     }
@@ -466,7 +466,7 @@ pub async fn delete_account(
         Err(e) => {
             error!("Account deletion failed: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to delete account. Please try again later.".to_string(),
+                message: "Failed to delete account. Please try again later.".to_string(),
             })
         }
     }
@@ -479,7 +479,7 @@ pub async fn get_active_sessions(
 ) -> impl Responder {
     let Some(redis) = redis.get_ref() else {
         return HttpResponse::ServiceUnavailable().json(ErrorResponse {
-            error: "Redis not configured".to_string(),
+            message: "Redis not configured".to_string(),
         });
     };
 
@@ -498,7 +498,7 @@ pub async fn get_active_sessions(
         Err(e) => {
             error!("Failed to get active sessions: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to retrieve active sessions".to_string(),
+                message: "Failed to retrieve active sessions".to_string(),
             })
         }
     }
@@ -514,7 +514,7 @@ pub async fn revoke_session(
 
     let Some(redis) = redis.get_ref() else {
         return HttpResponse::ServiceUnavailable().json(ErrorResponse {
-            error: "Redis not configured".to_string(),
+            message: "Redis not configured".to_string(),
         });
     };
 
@@ -527,14 +527,14 @@ pub async fn revoke_session(
                 }))
             } else {
                 HttpResponse::NotFound().json(ErrorResponse {
-                    error: "Session not found or already revoked".to_string(),
+                    message: "Session not found or already revoked".to_string(),
                 })
             }
         }
         Err(e) => {
             error!("Failed to revoke session: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to revoke session".to_string(),
+                message: "Failed to revoke session".to_string(),
             })
         }
     }

@@ -143,7 +143,7 @@ pub struct AuditUserInfo {
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
-    error: String,
+    message: String,
 }
 
 pub async fn get_user_profile(pool: &PgPool, user_id: Uuid) -> Result<UserProfile, HttpResponse> {
@@ -370,12 +370,12 @@ pub async fn check_event_organizer_access(
     match EventOrganizer::is_organizer(pool, event_id, user_id).await {
         Ok(true) => Ok(()),
         Ok(false) => Err(HttpResponse::Forbidden().json(ErrorResponse {
-            error: "Access denied. Only event organizers can perform this action".to_string(),
+            message: "Access denied. Only event organizers can perform this action".to_string(),
         })),
         Err(e) => {
             error!("Failed to check organizer access: {}", e);
             Err(HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to verify permissions".to_string(),
+                message: "Failed to verify permissions".to_string(),
             }))
         }
     }
@@ -390,12 +390,12 @@ pub async fn check_event_permission(
     match EventOrganizer::has_permission(pool, event_id, user_id, permission).await {
         Ok(true) => Ok(()),
         Ok(false) => Err(HttpResponse::Forbidden().json(ErrorResponse {
-            error: format!("Access denied. Missing required permission: {}", permission),
+            message: format!("Access denied. Missing required permission: {}", permission),
         })),
         Err(e) => {
             error!("Failed to check permission {}: {}", permission, e);
             Err(HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to verify permissions".to_string(),
+                message: "Failed to verify permissions".to_string(),
             }))
         }
     }

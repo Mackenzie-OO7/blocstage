@@ -25,7 +25,7 @@ pub struct PlatformRevenueResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ErrorResponse {
-    pub error: String,
+    pub message: String,
 }
 
 pub async fn get_sponsor_statistics(
@@ -210,7 +210,7 @@ pub async fn add_sponsor_account(
         Err(e) => {
             error!("Failed to initialize sponsor manager: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             });
         }
     };
@@ -232,7 +232,7 @@ pub async fn add_sponsor_account(
         Err(e) => {
             error!("Failed to add sponsor account: {}", e);
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: format!("Failed to add sponsor account: {}", e),
+                message: format!("Failed to add sponsor account: {}", e),
             })
         }
     }
@@ -253,7 +253,7 @@ pub async fn update_sponsor_account(
         Err(e) => {
             error!("Failed to initialize sponsor manager: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             });
         }
     };
@@ -275,7 +275,7 @@ pub async fn update_sponsor_account(
         Err(e) => {
             error!("Failed to update sponsor account: {}", e);
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: format!("Failed to update sponsor account: {}", e),
+                message: format!("Failed to update sponsor account: {}", e),
             })
         }
     }
@@ -297,7 +297,7 @@ pub async fn deactivate_sponsor(
         Err(e) => {
             error!("Failed to initialize sponsor manager: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             });
         }
     };
@@ -318,7 +318,7 @@ pub async fn deactivate_sponsor(
         Err(e) => {
             error!("Failed to deactivate sponsor account: {}", e);
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: format!("Failed to deactivate sponsor account: {}", e),
+                message: format!("Failed to deactivate sponsor account: {}", e),
             })
         }
     }
@@ -340,7 +340,7 @@ pub async fn reactivate_sponsor(
         Err(e) => {
             error!("Failed to initialize sponsor manager: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             });
         }
     };
@@ -361,7 +361,7 @@ pub async fn reactivate_sponsor(
         Err(e) => {
             error!("Failed to reactivate sponsor account: {}", e);
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: format!("Failed to reactivate sponsor account: {}", e),
+                message: format!("Failed to reactivate sponsor account: {}", e),
             })
         }
     }
@@ -381,7 +381,7 @@ pub async fn list_sponsors(
         Err(e) => {
             error!("Failed to initialize sponsor manager: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             });
         }
     };
@@ -394,7 +394,7 @@ pub async fn list_sponsors(
         Err(e) => {
             error!("Failed to list sponsor accounts: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to retrieve sponsor accounts".to_string(),
+                message: "Failed to retrieve sponsor accounts".to_string(),
             })
         }
     }
@@ -416,7 +416,7 @@ pub async fn get_sponsor_by_id(
         Err(e) => {
             error!("Failed to initialize sponsor manager: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             });
         }
     };
@@ -428,7 +428,7 @@ pub async fn get_sponsor_by_id(
         Err(e) => {
             error!("Failed to get sponsor account: {}", e);
             HttpResponse::NotFound().json(ErrorResponse {
-                error: "Sponsor account not found".to_string(),
+                message: "Sponsor account not found".to_string(),
             })
         }
     }

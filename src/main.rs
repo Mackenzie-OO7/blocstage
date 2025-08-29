@@ -270,8 +270,7 @@ async fn main(
                             actix_web::error::InternalError::from_response(
                             err,
                             HttpResponse::BadRequest().json(json!({
-                                "error": "Invalid JSON payload",
-                                "message": "Request body contains invalid JSON or exceeds size limit"
+                                "message": "Invalid JSON payload"
                             }))
                         ).into()
                         }),

@@ -8,7 +8,7 @@ use serde::{Serialize};
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
-    error: String,
+    message: String,
 }
 
 pub async fn get_transaction_by_id(
@@ -20,19 +20,19 @@ pub async fn get_transaction_by_id(
         Ok(Some(transaction)) => {
             if transaction.user_id != user.id {
                 return HttpResponse::Forbidden().json(ErrorResponse {
-                    error: "You don't have permission to view this transaction".to_string(),
+                    message: "You don't have permission to view this transaction".to_string(),
                 });
             }
             
             HttpResponse::Ok().json(transaction)
         },
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "Transaction not found".to_string(),
+            message: "Transaction not found".to_string(),
         }),
         Err(e) => {
             error!("Failed to fetch transaction: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch transaction. Please try again.".to_string(),
+                message: "Failed to fetch transaction. Please try again.".to_string(),
             })
         },
     }
@@ -47,7 +47,7 @@ pub async fn get_user_transactions(
         Err(e) => {
             error!("Failed to fetch user transactions: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch your transaction history. Please try again.".to_string(),
+                message: "Failed to fetch your transaction history. Please try again.".to_string(),
             })
         },
     }
@@ -62,7 +62,7 @@ pub async fn generate_receipt(
         Ok(Some(transaction)) => {
             if transaction.user_id != user.id {
                 return HttpResponse::Forbidden().json(ErrorResponse {
-                    error: "You don't have permission to generate a receipt for this transaction".to_string(),
+                    message: "You don't have permission to generate a receipt for this transaction".to_string(),
                 });
             }
             
@@ -77,18 +77,18 @@ pub async fn generate_receipt(
                 Err(e) => {
                     error!("Failed to generate receipt: {}", e);
                     HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to generate receipt. Please try again.".to_string(),
+                        message: "Failed to generate receipt. Please try again.".to_string(),
                     })
                 },
             }
         },
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "Transaction not found".to_string(),
+            message: "Transaction not found".to_string(),
         }),
         Err(e) => {
             error!("Failed to fetch transaction: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch transaction. Please try again.".to_string(),
+                message: "Failed to fetch transaction. Please try again.".to_string(),
             })
         },
     }

@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
-    error: String,
+    message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,20 +47,20 @@ pub async fn create_ticket_type(
         Ok(Some(event)) => event,
         Ok(None) => {
             return HttpResponse::NotFound().json(ErrorResponse {
-                error: "Event not found".to_string(),
+                message: "Event not found".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to fetch event: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch event".to_string(),
+                message: "Failed to fetch event".to_string(),
             });
         }
     };
 
     if event.organizer_id != user.id {
         return HttpResponse::Forbidden().json(ErrorResponse {
-            error: "You don't have permission to create ticket types for this event".to_string(),
+            message: "You don't have permission to create ticket types for this event".to_string(),
         });
     }
 
@@ -69,7 +69,7 @@ pub async fn create_ticket_type(
         Err(e) => {
             error!("Failed to update event status: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to validate event status".to_string(),
+                message: "Failed to validate event status".to_string(),
             });
         }
     };
@@ -78,7 +78,7 @@ pub async fn create_ticket_type(
     match effective_status.as_str() {
         "ended" => {
             return HttpResponse::BadRequest().json(ErrorResponse {
-                error: format!(
+                message: format!(
                     "Cannot create a new ticket for an event that has already ended. This event ended on {}",
                     updated_event.end_time.format("%B %d, %Y at %H:%M UTC")
                 ),
@@ -86,12 +86,12 @@ pub async fn create_ticket_type(
         }
         "cancelled" => {
             return HttpResponse::BadRequest().json(ErrorResponse {
-                error: "Cannot create a new ticket for a cancelled event".to_string(),
+                message: "Cannot create a new ticket for a cancelled event".to_string(),
             });
         }
         "ongoing" => {
             return HttpResponse::BadRequest().json(ErrorResponse {
-                error: format!(
+                message: format!(
                     "Cannot create a new ticket for an event that is currently ongoing. (This event started at {})",
                     updated_event.start_time.format("%B %d, %Y at %H:%M UTC")
                 ),
@@ -100,7 +100,7 @@ pub async fn create_ticket_type(
         "scheduled" | "active" => {}
         _ => {
             return HttpResponse::BadRequest().json(ErrorResponse {
-                error: "Event is not in a valid state for creating ticket types".to_string(),
+                message: "Event is not in a valid state for creating ticket types".to_string(),
             });
         }
     }
@@ -110,7 +110,7 @@ pub async fn create_ticket_type(
     let time_until_event = updated_event.start_time - now;
     if time_until_event < chrono::Duration::hours(1) {
         return HttpResponse::BadRequest().json(ErrorResponse {
-            error: "Cannot create a new ticket less than 1 hour before the event starts"
+            message: "Cannot create a new ticket less than 1 hour before the event starts"
                 .to_string(),
         });
     }
@@ -135,7 +135,7 @@ pub async fn create_ticket_type(
             };
 
             HttpResponse::BadRequest().json(ErrorResponse {
-                error: error_message.to_string(),
+                message: error_message.to_string(),
             })
         }
     }
@@ -150,7 +150,7 @@ pub async fn get_ticket_types(
         Err(e) => {
             error!("Failed to fetch ticket types: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch ticket types. Please try again.".to_string(),
+                message: "Failed to fetch ticket types. Please try again.".to_string(),
             })
         }
     }
@@ -167,13 +167,13 @@ pub async fn update_ticket_type_status(
         Ok(Some(ticket_type)) => ticket_type,
         Ok(None) => {
             return HttpResponse::NotFound().json(ErrorResponse {
-                error: "Ticket type not found".to_string(),
+                message: "Ticket type not found".to_string(),
             });
         }
         Err(e) => {
             error!("Failed to fetch ticket type: {}", e);
             return HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch ticket type. Please try again.".to_string(),
+                message: "Failed to fetch ticket type. Please try again.".to_string(),
             });
         }
     };
@@ -197,7 +197,7 @@ pub async fn update_ticket_type_status(
         Err(e) => {
             error!("Failed to update ticket type status: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to update ticket type status. Please try again.".to_string(),
+                message: "Failed to update ticket type status. Please try again.".to_string(),
             })
         }
     }
@@ -244,7 +244,7 @@ pub async fn claim_free_ticket(
                     };
 
                     HttpResponse::BadRequest().json(ErrorResponse {
-                        error: error_message.to_string(),
+                        message: error_message.to_string(),
                     })
                 }
             }
@@ -252,7 +252,7 @@ pub async fn claim_free_ticket(
         Err(e) => {
             error!("Failed to initialize ticket service: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             })
         }
     }
@@ -299,7 +299,7 @@ pub async fn purchase_ticket(
                     };
 
                     HttpResponse::BadRequest().json(ErrorResponse {
-                        error: error_message.to_string(),
+                        message: error_message.to_string(),
                     })
                 }
             }
@@ -307,7 +307,7 @@ pub async fn purchase_ticket(
         Err(e) => {
             error!("Failed to initialize ticket service: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             })
         }
     }
@@ -331,14 +331,14 @@ pub async fn verify_ticket(pool: web::Data<PgPool>, ticket_id: web::Path<Uuid>) 
                 };
 
                 HttpResponse::BadRequest().json(ErrorResponse {
-                    error: error_message.to_string(),
+                    message: error_message.to_string(),
                 })
             }
         },
         Err(e) => {
             error!("Failed to initialize ticket service: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             })
         }
     }
@@ -378,14 +378,14 @@ pub async fn check_in_ticket(
                 };
 
                 HttpResponse::BadRequest().json(ErrorResponse {
-                    error: error_message.to_string(),
+                    message: error_message.to_string(),
                 })
             }
         },
         Err(e) => {
             error!("Failed to initialize ticket service: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             })
         }
     }
@@ -401,7 +401,7 @@ pub async fn generate_pdf_ticket(
         Ok(Some(ticket)) => {
             if ticket.owner_id != user.id {
                 return HttpResponse::Forbidden().json(ErrorResponse {
-                    error: "You don't have permission to access this ticket".to_string(),
+                    message: "You don't have permission to access this ticket".to_string(),
                 });
             }
 
@@ -417,25 +417,25 @@ pub async fn generate_pdf_ticket(
                     Err(e) => {
                         error!("Failed to generate PDF ticket: {}", e);
                         HttpResponse::InternalServerError().json(ErrorResponse {
-                            error: "Failed to generate PDF ticket. Please try again.".to_string(),
+                            message: "Failed to generate PDF ticket. Please try again.".to_string(),
                         })
                     }
                 },
                 Err(e) => {
                     error!("Failed to initialize ticket service: {}", e);
                     HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Internal server error".to_string(),
+                        message: "Internal server error".to_string(),
                     })
                 }
             }
         }
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "Ticket not found".to_string(),
+            message: "Ticket not found".to_string(),
         }),
         Err(e) => {
             error!("Failed to fetch ticket: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to verify ticket ownership. Please try again.".to_string(),
+                message: "Failed to verify ticket ownership. Please try again.".to_string(),
             })
         }
     }
@@ -478,7 +478,7 @@ pub async fn transfer_ticket(
                     };
 
                     HttpResponse::BadRequest().json(ErrorResponse {
-                        error: error_message.to_string(),
+                        message: error_message.to_string(),
                     })
                 }
             }
@@ -486,7 +486,7 @@ pub async fn transfer_ticket(
         Err(e) => {
             error!("Failed to initialize ticket service: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             })
         }
     }
@@ -499,14 +499,14 @@ pub async fn get_user_tickets(pool: web::Data<PgPool>, user: AuthenticatedUser) 
             Err(e) => {
                 error!("Failed to fetch user tickets: {}", e);
                 HttpResponse::InternalServerError().json(ErrorResponse {
-                    error: "Failed to fetch your tickets. Please try again.".to_string(),
+                    message: "Failed to fetch your tickets. Please try again.".to_string(),
                 })
             }
         },
         Err(e) => {
             error!("Failed to initialize ticket service: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             })
         }
     }
@@ -537,7 +537,7 @@ pub async fn admin_get_all_tickets(
         Err(e) => {
             error!("Failed to fetch filtered tickets for admin: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch tickets".to_string(),
+                message: "Failed to fetch tickets".to_string(),
             })
         }
     }
@@ -813,7 +813,7 @@ pub async fn admin_cancel_any_ticket(
                     };
 
                     HttpResponse::BadRequest().json(ErrorResponse {
-                        error: error_message.to_string(),
+                        message: error_message.to_string(),
                     })
                 }
             }
@@ -821,7 +821,7 @@ pub async fn admin_cancel_any_ticket(
         Err(e) => {
             error!("Failed to initialize ticket service: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Internal server error".to_string(),
+                message: "Internal server error".to_string(),
             })
         }
     }

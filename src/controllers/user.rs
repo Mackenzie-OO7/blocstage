@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
-    error: String,
+    message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,13 +59,13 @@ pub async fn get_profile(
         Ok(None) => {
             error!("User found in token but not in database: {}", user.id);
             HttpResponse::NotFound().json(ErrorResponse {
-                error: "User profile not found".to_string(),
+                message: "User profile not found".to_string(),
             })
         }
         Err(e) => {
             error!("Failed to fetch user profile: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch your profile. Please try again.".to_string(),
+                message: "Failed to fetch your profile. Please try again.".to_string(),
             })
         }
     }
@@ -90,14 +90,14 @@ pub async fn update_profile(
                 match username_exists {
                     Ok(Some(_)) => {
                         return HttpResponse::BadRequest().json(ErrorResponse {
-                            error: "Username is already taken".to_string(),
+                            message: "Username is already taken".to_string(),
                         });
                     }
                     Ok(None) => {}
                     Err(e) => {
                         error!("Database error checking username: {}", e);
                         return HttpResponse::InternalServerError().json(ErrorResponse {
-                            error: "Failed to update profile. Please try again.".to_string(),
+                            message: "Failed to update profile. Please try again.".to_string(),
                         });
                     }
                 }
@@ -124,7 +124,7 @@ pub async fn update_profile(
                     Err(e) => {
                         error!("Failed to update user profile: {}", e);
                         return HttpResponse::InternalServerError().json(ErrorResponse {
-                            error: "Failed to update profile. Please try again.".to_string(),
+                            message: "Failed to update profile. Please try again.".to_string(),
                         });
                     }
                 }
@@ -135,13 +135,13 @@ pub async fn update_profile(
         Ok(None) => {
             error!("User found in token but not in database: {}", user.id);
             HttpResponse::NotFound().json(ErrorResponse {
-                error: "User profile not found".to_string(),
+                message: "User profile not found".to_string(),
             })
         }
         Err(e) => {
             error!("Failed to fetch user profile: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch your profile. Please try again.".to_string(),
+                message: "Failed to fetch your profile. Please try again.".to_string(),
             })
         }
     }
@@ -158,7 +158,7 @@ pub async fn update_password(
                 Ok(true) => {
                     if password_data.new_password.len() < 8 {
                         return HttpResponse::BadRequest().json(ErrorResponse {
-                            error: "New password must be at least 8 characters long".to_string(),
+                            message: "New password must be at least 8 characters long".to_string(),
                         });
                     }
 
@@ -188,7 +188,7 @@ pub async fn update_password(
                                 Err(e) => {
                                     error!("Failed to update password in database: {}", e);
                                     HttpResponse::InternalServerError().json(ErrorResponse {
-                                        error: "Failed to update password. Please try again."
+                                        message: "Failed to update password. Please try again."
                                             .to_string(),
                                     })
                                 }
@@ -197,18 +197,18 @@ pub async fn update_password(
                         Err(e) => {
                             error!("Failed to hash new password: {}", e);
                             HttpResponse::InternalServerError().json(ErrorResponse {
-                                error: "Failed to update password. Please try again.".to_string(),
+                                message: "Failed to update password. Please try again.".to_string(),
                             })
                         }
                     }
                 }
                 Ok(false) => HttpResponse::BadRequest().json(ErrorResponse {
-                    error: "Current password is incorrect".to_string(),
+                    message: "Current password is incorrect".to_string(),
                 }),
                 Err(e) => {
                     error!("Error verifying password: {}", e);
                     HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to verify current password. Please try again.".to_string(),
+                        message: "Failed to verify current password. Please try again.".to_string(),
                     })
                 }
             }
@@ -216,13 +216,13 @@ pub async fn update_password(
         Ok(None) => {
             error!("User found in token but not in database: {}", user.id);
             HttpResponse::NotFound().json(ErrorResponse {
-                error: "User profile not found".to_string(),
+                message: "User profile not found".to_string(),
             })
         }
         Err(e) => {
             error!("Failed to fetch user profile: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch your profile. Please try again.".to_string(),
+                message: "Failed to fetch your profile. Please try again.".to_string(),
             })
         }
     }
@@ -236,7 +236,7 @@ pub async fn get_wallet_info(pool: web::Data<PgPool>, user: AuthenticatedUser) -
                 Err(e) => {
                     error!("Failed to initialize Stellar service: {}", e);
                     return HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to connect to blockchain service. Please try again."
+                        message: "Failed to connect to blockchain service. Please try again."
                             .to_string(),
                     });
                 }
@@ -246,7 +246,7 @@ pub async fn get_wallet_info(pool: web::Data<PgPool>, user: AuthenticatedUser) -
                 Some(key) => key.clone(),
                 None => {
                     return HttpResponse::NotFound().json(ErrorResponse {
-                        error: "No wallet found for this account".to_string(),
+                        message: "No wallet found for this account".to_string(),
                     });
                 }
             };
@@ -282,13 +282,13 @@ pub async fn get_wallet_info(pool: web::Data<PgPool>, user: AuthenticatedUser) -
         Ok(None) => {
             error!("User found in token but not in database: {}", user.id);
             HttpResponse::NotFound().json(ErrorResponse {
-                error: "User profile not found".to_string(),
+                message: "User profile not found".to_string(),
             })
         }
         Err(e) => {
             error!("Failed to fetch user profile: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch your profile. Please try again.".to_string(),
+                message: "Failed to fetch your profile. Please try again.".to_string(),
             })
         }
     }
@@ -315,7 +315,7 @@ pub async fn get_wallet_setup_status(
                         Ok(service) => service,
                         Err(_) => {
                             return HttpResponse::InternalServerError().json(ErrorResponse {
-                                error: "Failed to connect to blockchain service".to_string(),
+                                message: "Failed to connect to blockchain service".to_string(),
                             });
                         }
                     };
@@ -351,12 +351,12 @@ pub async fn get_wallet_setup_status(
             HttpResponse::Ok().json(status)
         }
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "User profile not found".to_string(),
+            message: "User profile not found".to_string(),
         }),
         Err(e) => {
             error!("Failed to fetch user profile: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch your profile. Please try again.".to_string(),
+                message: "Failed to fetch your profile. Please try again.".to_string(),
             })
         }
     }
@@ -370,14 +370,14 @@ pub async fn create_usdc_trustline(
         Ok(Some(user_profile)) => {
             if user_profile.stellar_public_key.is_none() {
                 return HttpResponse::BadRequest().json(ErrorResponse {
-                    error: "User must have a Stellar wallet before creating USDC trustline"
+                    message: "User must have a Stellar wallet before creating USDC trustline"
                         .to_string(),
                 });
             }
 
             if user_profile.stellar_secret_key_encrypted.is_none() {
                 return HttpResponse::BadRequest().json(ErrorResponse {
-                    error: "User wallet is incomplete. Please contact support.".to_string(),
+                    message: "User wallet is incomplete. Please contact support.".to_string(),
                 });
             }
 
@@ -386,7 +386,7 @@ pub async fn create_usdc_trustline(
                 Err(e) => {
                     error!("Failed to initialize Stellar service: {}", e);
                     return HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to initialize blockchain service".to_string(),
+                        message: "Failed to initialize blockchain service".to_string(),
                     });
                 }
             };
@@ -402,7 +402,7 @@ pub async fn create_usdc_trustline(
                     Err(e) => {
                         error!("Failed to initialize sponsor manager: {}", e);
                         return HttpResponse::InternalServerError().json(ErrorResponse {
-                            error: "Sponsorship service unavailable".to_string(),
+                            message: "Sponsorship service unavailable".to_string(),
                         });
                     }
                 };
@@ -412,7 +412,7 @@ pub async fn create_usdc_trustline(
                 Err(e) => {
                     error!("Failed to get available sponsor: {}", e);
                     return HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "No sponsor accounts available. Please try again later.".to_string(),
+                        message: "No sponsor accounts available. Please try again later.".to_string(),
                     });
                 }
             };
@@ -452,18 +452,18 @@ pub async fn create_usdc_trustline(
                 Err(e) => {
                     error!("Failed to create USDC trustline: {}", e);
                     HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: format!("Failed to create USDC trustline: {}", e),
+                        message: format!("Failed to create USDC trustline: {}", e),
                     })
                 }
             }
         }
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "User profile not found".to_string(),
+            message: "User profile not found".to_string(),
         }),
         Err(e) => {
             error!("Failed to fetch user profile: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch your profile. Please try again.".to_string(),
+                message: "Failed to fetch your profile. Please try again.".to_string(),
             })
         }
     }
@@ -479,7 +479,7 @@ pub async fn get_funding_instructions(
                 Some(key) => key.clone(),
                 None => {
                     return HttpResponse::BadRequest().json(ErrorResponse {
-                        error: "User must have a Stellar wallet to receive funding instructions"
+                        message: "User must have a Stellar wallet to receive funding instructions"
                             .to_string(),
                     });
                 }
@@ -490,7 +490,7 @@ pub async fn get_funding_instructions(
                 Ok(service) => service,
                 Err(_) => {
                     return HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to connect to blockchain service".to_string(),
+                        message: "Failed to connect to blockchain service".to_string(),
                     });
                 }
             };
@@ -544,12 +544,12 @@ pub async fn get_funding_instructions(
             HttpResponse::Ok().json(instructions)
         }
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "User profile not found".to_string(),
+            message: "User profile not found".to_string(),
         }),
         Err(e) => {
             error!("Failed to fetch user profile: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch your profile. Please try again.".to_string(),
+                message: "Failed to fetch your profile. Please try again.".to_string(),
             })
         }
     }
@@ -564,7 +564,7 @@ pub async fn generate_wallet(
         Ok(Some(user_profile)) => {
             if user_profile.stellar_public_key.is_some() {
                 return HttpResponse::BadRequest().json(ErrorResponse {
-                    error: "You already have a wallet. Please use the existing wallet.".to_string(),
+                    message: "You already have a wallet. Please use the existing wallet.".to_string(),
                 });
             }
 
@@ -573,7 +573,7 @@ pub async fn generate_wallet(
                 Err(e) => {
                     error!("Failed to initialize Stellar service: {}", e);
                     return HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to connect to blockchain service. Please try again."
+                        message: "Failed to connect to blockchain service. Please try again."
                             .to_string(),
                     });
                 }
@@ -595,7 +595,7 @@ pub async fn generate_wallet(
                         Err(e) => {
                             error!("Failed to update user with new Stellar keys: {}", e);
                             HttpResponse::InternalServerError().json(ErrorResponse {
-                                error: "Failed to update user with new wallet. Please try again."
+                                message: "Failed to update user with new wallet. Please try again."
                                     .to_string(),
                             })
                         }
@@ -604,7 +604,7 @@ pub async fn generate_wallet(
                 Err(e) => {
                     error!("Failed to generate Stellar keypair: {}", e);
                     HttpResponse::InternalServerError().json(ErrorResponse {
-                        error: "Failed to generate wallet. Please try again.".to_string(),
+                        message: "Failed to generate wallet. Please try again.".to_string(),
                     })
                 }
             }
@@ -612,13 +612,13 @@ pub async fn generate_wallet(
         Ok(None) => {
             error!("User found in token but not in database: {}", user.id);
             HttpResponse::NotFound().json(ErrorResponse {
-                error: "User profile not found".to_string(),
+                message: "User profile not found".to_string(),
             })
         }
         Err(e) => {
             error!("Failed to fetch user profile: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch your profile. Please try again.".to_string(),
+                message: "Failed to fetch your profile. Please try again.".to_string(),
             })
         }
     }
@@ -642,12 +642,12 @@ pub async fn get_user_by_id(
     match User::find_by_id(&pool, *user_id).await {
         Ok(Some(user)) => HttpResponse::Ok().json(user),
         Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
-            error: "User not found".to_string(),
+            message: "User not found".to_string(),
         }),
         Err(e) => {
             error!("Failed to fetch user: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
-                error: "Failed to fetch user. Please try again.".to_string(),
+                message: "Failed to fetch user. Please try again.".to_string(),
             })
         }
     }
