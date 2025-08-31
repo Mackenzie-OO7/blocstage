@@ -15,11 +15,18 @@ mod flexible_datetime {
     {
         let s = String::deserialize(deserializer)?;
         
+        // Try RFC3339 format first (with timezone)
         if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
             return Ok(dt.with_timezone(&Utc));
         }
         
+        // Try format with seconds (YYYY-MM-DDTHH:MM:SS)
         if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
+            return Ok(DateTime::from_naive_utc_and_offset(naive_dt, Utc));
+        }
+        
+        // Try format without seconds (YYYY-MM-DDTHH:MM)
+        if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M") {
             return Ok(DateTime::from_naive_utc_and_offset(naive_dt, Utc));
         }
         
@@ -33,12 +40,18 @@ mod flexible_datetime {
         let opt = Option::<String>::deserialize(deserializer)?;
         match opt {
             Some(s) => {
-                // Try RFC3339 first
+                // Try RFC3339 format first (with timezone)
                 if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
                     return Ok(Some(dt.with_timezone(&Utc)));
                 }
                 
+                // Try format with seconds (YYYY-MM-DDTHH:MM:SS)
                 if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
+                    return Ok(Some(DateTime::from_naive_utc_and_offset(naive_dt, Utc)));
+                }
+                
+                // Try format without seconds (YYYY-MM-DDTHH:MM)
+                if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M") {
                     return Ok(Some(DateTime::from_naive_utc_and_offset(naive_dt, Utc)));
                 }
                 
@@ -501,13 +514,7 @@ impl Event {
                 ));
             }
 
-            let min_duration = chrono::Duration::minutes(5);
-            if session.end_time - session.start_time < min_duration {
-                return Err(anyhow!(
-                    "Session {} duration must be at least 5 minutes",
-                    index + 1
-                ));
-            }
+            // Sessions can be any duration the user sets (as long as end time is after start time)
         }
 
         Ok(())
