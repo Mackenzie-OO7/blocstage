@@ -87,6 +87,11 @@
         "ordinal": 16,
         "name": "last_name",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 17,
+        "name": "profile_picture_url",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -113,7 +118,8 @@
       false,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
   "hash": "b265d88dffe3f0fa49ce9dbb71880fb476263834bc6ae498be40e6b637ebff5c"

@@ -28,6 +28,7 @@ pub struct User {
     pub reset_token_expires: Option<DateTime<Utc>>,
     pub status: String, // "active", "deleted", etc.
     pub role: String,
+    pub profile_picture_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -77,9 +78,9 @@ impl User {
             r#"
         INSERT INTO users (
         id, username, email, first_name, last_name, password_hash, 
-        created_at, updated_at, email_verified, verification_token, status, role
+        created_at, updated_at, email_verified, verification_token, status, role, profile_picture_url
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         RETURNING *
         "#,
             id,
@@ -93,7 +94,8 @@ impl User {
             false,
             Some(verification_token),
             "active",
-            "user"
+            "user",
+            None::<String>
         )
         .fetch_one(pool)
         .await?;
@@ -337,7 +339,7 @@ impl User {
                 stellar_public_key, stellar_secret_key, stellar_secret_key_encrypted,
                 created_at, updated_at,
                 email_verified, verification_token,
-                reset_token, reset_token_expires, status, role
+                reset_token, reset_token_expires, status, role, profile_picture_url
             "#,
             format!("deleted_{}@deleted.com", self.id),
             format!("deleted_user_{}", self.id),

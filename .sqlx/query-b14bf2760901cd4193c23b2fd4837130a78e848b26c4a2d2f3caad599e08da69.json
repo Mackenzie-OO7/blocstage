@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                    UPDATE users\n                    SET username = $1, updated_at = NOW()\n                    WHERE id = $2\n                    RETURNING *\n                    ",
+  "query": "\n        UPDATE users \n        SET username = $1, first_name = $2, last_name = $3, profile_picture_url = $4, updated_at = NOW()\n        WHERE id = $5\n        RETURNING *\n        ",
   "describe": {
     "columns": [
       {
@@ -87,10 +87,18 @@
         "ordinal": 16,
         "name": "last_name",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 17,
+        "name": "profile_picture_url",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
       "Left": [
+        "Varchar",
+        "Varchar",
+        "Varchar",
         "Varchar",
         "Uuid"
       ]
@@ -112,8 +120,9 @@
       false,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "6ad85e001cda8cde9d02f5be0ae1411843205b4d5a9aec452d7ce691f794d9a6"
+  "hash": "b14bf2760901cd4193c23b2fd4837130a78e848b26c4a2d2f3caad599e08da69"
 }

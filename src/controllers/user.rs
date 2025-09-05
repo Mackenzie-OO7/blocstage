@@ -1,7 +1,7 @@
+use crate::middleware::auth::AuthenticatedUser;
 use crate::models::user::User;
 use crate::services::stellar::StellarService;
 use crate::services::RedisService;
-use crate::{middleware::auth::AuthenticatedUser};
 use actix_web::{web, HttpResponse, Responder};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,10 @@ struct ErrorResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateProfileRequest {
-    username: Option<String>,
+    pub username: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub profile_picture_url: Option<String>,
     // TODO: email updates would require verification
 }
 
@@ -48,14 +51,9 @@ pub struct GenerateWalletRequest {
     // TODO: add options
 }
 
-pub async fn get_profile(
-    pool: web::Data<PgPool>, 
-    user: AuthenticatedUser
-) -> impl Responder {
+pub async fn get_profile(pool: web::Data<PgPool>, user: AuthenticatedUser) -> impl Responder {
     match User::find_by_id(&pool, user.id).await {
-        Ok(Some(user_profile)) => {
-            HttpResponse::Ok().json(user_profile)
-        }
+        Ok(Some(user_profile)) => HttpResponse::Ok().json(user_profile),
         Ok(None) => {
             error!("User found in token but not in database: {}", user.id);
             HttpResponse::NotFound().json(ErrorResponse {
@@ -76,75 +74,177 @@ pub async fn update_profile(
     profile_data: web::Json<UpdateProfileRequest>,
     user: AuthenticatedUser,
 ) -> impl Responder {
-    match User::find_by_id(&pool, user.id).await {
-        Ok(Some(user_profile)) => {
-            if let Some(username) = &profile_data.username {
-                let username_exists = sqlx::query!(
-                    "SELECT id FROM users WHERE username = $1 AND id != $2",
-                    username,
-                    user.id
-                )
-                .fetch_optional(&**pool)
-                .await;
+    // Validate input fields
+    if let Err(validation_error) = validate_profile_update(&profile_data) {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            message: validation_error,
+        });
+    }
 
-                match username_exists {
-                    Ok(Some(_)) => {
-                        return HttpResponse::BadRequest().json(ErrorResponse {
-                            message: "Username is already taken".to_string(),
-                        });
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        error!("Database error checking username: {}", e);
-                        return HttpResponse::InternalServerError().json(ErrorResponse {
-                            message: "Failed to update profile. Please try again.".to_string(),
-                        });
-                    }
-                }
-
-                let updated_user = sqlx::query_as!(
-                    User,
-                    r#"
-                    UPDATE users
-                    SET username = $1, updated_at = NOW()
-                    WHERE id = $2
-                    RETURNING *
-                    "#,
-                    username,
-                    user.id
-                )
-                .fetch_one(&**pool)
-                .await;
-
-                match updated_user {
-                    Ok(user) => {
-                        info!("User profile updated: {}", user.id);
-                        return HttpResponse::Ok().json(user);
-                    }
-                    Err(e) => {
-                        error!("Failed to update user profile: {}", e);
-                        return HttpResponse::InternalServerError().json(ErrorResponse {
-                            message: "Failed to update profile. Please try again.".to_string(),
-                        });
-                    }
-                }
-            }
-
-            HttpResponse::Ok().json(user_profile)
-        }
+    // Check if user exists
+    let current_user = match User::find_by_id(&pool, user.id).await {
+        Ok(Some(user_profile)) => user_profile,
         Ok(None) => {
             error!("User found in token but not in database: {}", user.id);
-            HttpResponse::NotFound().json(ErrorResponse {
+            return HttpResponse::NotFound().json(ErrorResponse {
                 message: "User profile not found".to_string(),
-            })
+            });
         }
         Err(e) => {
             error!("Failed to fetch user profile: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse {
+            return HttpResponse::InternalServerError().json(ErrorResponse {
                 message: "Failed to fetch your profile. Please try again.".to_string(),
+            });
+        }
+    };
+
+    // Check if username is available (if being updated)
+    if let Some(username) = &profile_data.username {
+        if username != &current_user.username {
+            let username_exists = sqlx::query!(
+                "SELECT id FROM users WHERE username = $1 AND id != $2",
+                username,
+                user.id
+            )
+            .fetch_optional(&**pool)
+            .await;
+
+            match username_exists {
+                Ok(Some(_)) => {
+                    return HttpResponse::BadRequest().json(ErrorResponse {
+                        message: "Username is already taken".to_string(),
+                    });
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    error!("Database error checking username: {}", e);
+                    return HttpResponse::InternalServerError().json(ErrorResponse {
+                        message: "Failed to update profile. Please try again.".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Use current values as defaults for fields not being updated
+    let new_username = profile_data
+        .username
+        .as_ref()
+        .unwrap_or(&current_user.username);
+    let new_first_name = profile_data
+        .first_name
+        .as_ref()
+        .unwrap_or(&current_user.first_name);
+    let new_last_name = profile_data
+        .last_name
+        .as_ref()
+        .unwrap_or(&current_user.last_name);
+    let new_profile_picture_url = profile_data
+        .profile_picture_url
+        .as_ref()
+        .or(current_user.profile_picture_url.as_ref());
+
+    // Check if anything actually changed
+    let has_changes = profile_data.username.is_some()
+        || profile_data.first_name.is_some()
+        || profile_data.last_name.is_some()
+        || profile_data.profile_picture_url.is_some();
+
+    if !has_changes {
+        info!("No profile fields to update for user: {}", user.id);
+        return HttpResponse::Ok().json(current_user);
+    }
+
+    // Execute the update query
+    let updated_user = sqlx::query_as!(
+        User,
+        r#"
+        UPDATE users 
+        SET username = $1, first_name = $2, last_name = $3, profile_picture_url = $4, updated_at = NOW()
+        WHERE id = $5
+        RETURNING *
+        "#,
+        new_username,
+        new_first_name,
+        new_last_name,
+        new_profile_picture_url,
+        user.id
+    )
+    .fetch_one(&**pool)
+    .await;
+
+    match updated_user {
+        Ok(user) => {
+            info!("User profile updated successfully: {}", user.id);
+            HttpResponse::Ok().json(user)
+        }
+        Err(e) => {
+            error!("Failed to update user profile: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                message: "Failed to update profile. Please try again.".to_string(),
             })
         }
     }
+}
+
+fn validate_profile_update(profile_data: &UpdateProfileRequest) -> Result<(), String> {
+    // Validate username
+    if let Some(username) = &profile_data.username {
+        if username.trim().is_empty() {
+            return Err("Username cannot be empty".to_string());
+        }
+        if username.len() < 3 {
+            return Err("Username must be at least 3 characters long".to_string());
+        }
+        if username.len() > 50 {
+            return Err("Username cannot exceed 50 characters".to_string());
+        }
+        if !username
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(
+                "Username can only contain letters, numbers, underscores, and hyphens".to_string(),
+            );
+        }
+    }
+
+    // Validate first name
+    if let Some(first_name) = &profile_data.first_name {
+        if first_name.trim().is_empty() {
+            return Err("First name cannot be empty".to_string());
+        }
+        if first_name.len() > 100 {
+            return Err("First name cannot exceed 100 characters".to_string());
+        }
+    }
+
+    // Validate last name
+    if let Some(last_name) = &profile_data.last_name {
+        if last_name.trim().is_empty() {
+            return Err("Last name cannot be empty".to_string());
+        }
+        if last_name.len() > 100 {
+            return Err("Last name cannot exceed 100 characters".to_string());
+        }
+    }
+
+    // Validate profile picture URL
+    if let Some(profile_picture_url) = &profile_data.profile_picture_url {
+        if !profile_picture_url.trim().is_empty() {
+            if profile_picture_url.len() > 512 {
+                return Err("Profile picture URL cannot exceed 512 characters".to_string());
+            }
+            // Basic URL validation
+            if !profile_picture_url.starts_with("http://")
+                && !profile_picture_url.starts_with("https://")
+            {
+                return Err("Profile picture URL must be a valid HTTP or HTTPS URL".to_string());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn update_password(
@@ -412,7 +512,8 @@ pub async fn create_usdc_trustline(
                 Err(e) => {
                     error!("Failed to get available sponsor: {}", e);
                     return HttpResponse::InternalServerError().json(ErrorResponse {
-                        message: "No sponsor accounts available. Please try again later.".to_string(),
+                        message: "No sponsor accounts available. Please try again later."
+                            .to_string(),
                     });
                 }
             };
@@ -564,7 +665,8 @@ pub async fn generate_wallet(
         Ok(Some(user_profile)) => {
             if user_profile.stellar_public_key.is_some() {
                 return HttpResponse::BadRequest().json(ErrorResponse {
-                    message: "You already have a wallet. Please use the existing wallet.".to_string(),
+                    message: "You already have a wallet. Please use the existing wallet."
+                        .to_string(),
                 });
             }
 
@@ -661,7 +763,8 @@ pub async fn send_notification(
     // Check rate limit
     if let Some(redis) = redis.as_ref() {
         let rate_limit_key = format!("RATE_LIMIT:NOTIFICATIONS:{}", user.id);
-        match redis.check_rate_limit(&rate_limit_key, 10, 3600).await { // 10 per hour
+        match redis.check_rate_limit(&rate_limit_key, 10, 3600).await {
+            // 10 per hour
             Ok(allowed) => {
                 if !allowed {
                     return HttpResponse::TooManyRequests().json(json!({

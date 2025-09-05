@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE users\n            SET \n                status = 'deleted',\n                email = $1, \n                username = $2, \n                updated_at = $3\n            WHERE id = $4\n            RETURNING \n                id, username, email, first_name, last_name, password_hash, \n                stellar_public_key, stellar_secret_key, stellar_secret_key_encrypted,\n                created_at, updated_at,\n                email_verified, verification_token,\n                reset_token, reset_token_expires, status, role\n            ",
+  "query": "\n            UPDATE users\n            SET \n                status = 'deleted',\n                email = $1, \n                username = $2, \n                updated_at = $3\n            WHERE id = $4\n            RETURNING \n                id, username, email, first_name, last_name, password_hash, \n                stellar_public_key, stellar_secret_key, stellar_secret_key_encrypted,\n                created_at, updated_at,\n                email_verified, verification_token,\n                reset_token, reset_token_expires, status, role, profile_picture_url\n            ",
   "describe": {
     "columns": [
       {
@@ -87,6 +87,11 @@
         "ordinal": 16,
         "name": "role",
         "type_info": "Varchar"
+      },
+      {
+        "ordinal": 17,
+        "name": "profile_picture_url",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -114,8 +119,9 @@
       true,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "e3e3af4726200ff8ce06e64ca8f1f3315cf13b4076aa196c3edd2b231ae48d0d"
+  "hash": "8c613e531d7ff073fe7b1b0a542a730415e6d4540dcb2f9ed0017ef43b6d121c"
 }
