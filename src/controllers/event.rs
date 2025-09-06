@@ -3,8 +3,8 @@ use crate::controllers::admin_filters::{
 };
 use crate::middleware::auth::AuthenticatedUser;
 use crate::models::event::{
-    CreateEventRequest, CreateEventSessionRequest, Event, EventSession,
-    SearchEventsRequest, UpdateEventRequest, UpdateEventSessionRequest,
+    CreateEventRequest, CreateEventSessionRequest, Event, EventSession, SearchEventsRequest,
+    UpdateEventRequest, UpdateEventSessionRequest,
 };
 use crate::models::event_organizer::{
     AddOrganizerRequest, EventOrganizer, UpdateOrganizerPermissionsRequest,
@@ -852,27 +852,25 @@ pub async fn upload_session_file(
             );
 
             match save_session_file(&mut field, &event_id, &unique_filename).await {
-                Ok(file_url) => {
-                    match session.set_file_url(&pool, &file_url).await {
-                        Ok(updated_session) => {
-                            info!(
-                                "File uploaded for session {}: {} by user {}",
-                                session_id, filename, user.id
-                            );
-                            return HttpResponse::Ok().json(serde_json::json!({
-                                "message": "File uploaded successfully",
-                                "file_url": file_url,
-                                "session": updated_session
-                            }));
-                        }
-                        Err(e) => {
-                            error!("Failed to update session with file URL: {}", e);
-                            return HttpResponse::InternalServerError().json(ErrorResponse {
-                                message: "File uploaded but failed to link to session".to_string(),
-                            });
-                        }
+                Ok(image_url) => match session.set_image_url(&pool, &image_url).await {
+                    Ok(updated_session) => {
+                        info!(
+                            "File uploaded for session {}: {} by user {}",
+                            session_id, filename, user.id
+                        );
+                        return HttpResponse::Ok().json(serde_json::json!({
+                            "message": "File uploaded successfully",
+                            "image_url": image_url,
+                            "session": updated_session
+                        }));
                     }
-                }
+                    Err(e) => {
+                        error!("Failed to update session with file URL: {}", e);
+                        return HttpResponse::InternalServerError().json(ErrorResponse {
+                            message: "File uploaded but failed to link to session".to_string(),
+                        });
+                    }
+                },
                 Err(e) => {
                     error!("Failed to save session file: {}", e);
                     return HttpResponse::InternalServerError().json(ErrorResponse {

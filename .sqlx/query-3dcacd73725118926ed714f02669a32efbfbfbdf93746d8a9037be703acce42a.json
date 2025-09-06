@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE event_sessions \n            SET file_url = $1, updated_at = $2 \n            WHERE id = $3 \n            RETURNING *\n            ",
+  "query": "\n            UPDATE event_sessions \n            SET image_url = $1, updated_at = $2 \n            WHERE id = $3 \n            RETURNING *\n            ",
   "describe": {
     "columns": [
       {
@@ -40,7 +40,7 @@
       },
       {
         "ordinal": 7,
-        "name": "file_url",
+        "name": "image_url",
         "type_info": "Varchar"
       },
       {
@@ -80,5 +80,5 @@
       false
     ]
   },
-  "hash": "54b7521a0d55819ffc3f4526ff91231a811cd2c556389d40f6a653a30fd74070"
+  "hash": "3dcacd73725118926ed714f02669a32efbfbfbdf93746d8a9037be703acce42a"
 }

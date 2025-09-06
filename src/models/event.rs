@@ -14,23 +14,26 @@ mod flexible_datetime {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        
+
         // Try RFC3339 format first (with timezone)
         if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
             return Ok(dt.with_timezone(&Utc));
         }
-        
+
         // Try format with seconds (YYYY-MM-DDTHH:MM:SS)
         if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
             return Ok(DateTime::from_naive_utc_and_offset(naive_dt, Utc));
         }
-        
+
         // Try format without seconds (YYYY-MM-DDTHH:MM)
         if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M") {
             return Ok(DateTime::from_naive_utc_and_offset(naive_dt, Utc));
         }
-        
-        Err(serde::de::Error::custom(format!("Invalid datetime format: {}", s)))
+
+        Err(serde::de::Error::custom(format!(
+            "Invalid datetime format: {}",
+            s
+        )))
     }
 
     pub fn deserialize_option<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
@@ -44,18 +47,21 @@ mod flexible_datetime {
                 if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
                     return Ok(Some(dt.with_timezone(&Utc)));
                 }
-                
+
                 // Try format with seconds (YYYY-MM-DDTHH:MM:SS)
                 if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
                     return Ok(Some(DateTime::from_naive_utc_and_offset(naive_dt, Utc)));
                 }
-                
+
                 // Try format without seconds (YYYY-MM-DDTHH:MM)
                 if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M") {
                     return Ok(Some(DateTime::from_naive_utc_and_offset(naive_dt, Utc)));
                 }
-                
-                Err(serde::de::Error::custom(format!("Invalid datetime format: {}", s)))
+
+                Err(serde::de::Error::custom(format!(
+                    "Invalid datetime format: {}",
+                    s
+                )))
             }
             None => Ok(None),
         }
@@ -74,7 +80,7 @@ pub struct Event {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub status: String, // "active", "cancelled", "completed"
-    pub banner_image_url: Option<String>,
+    pub image_url: Option<String>,
     pub category: Option<String>,
     #[sqlx(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,7 +96,7 @@ pub struct EventSession {
     pub end_time: DateTime<Utc>,
     pub speaker_name: Option<String>,
     pub speaker_user_id: Option<Uuid>,
-    pub file_url: Option<String>,
+    pub image_url: Option<String>,
     pub session_order: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -112,6 +118,7 @@ pub struct CreateEventSessionRequest {
     pub end_time: DateTime<Utc>,
     pub speaker_name: Option<String>,
     pub speaker_user_id: Option<Uuid>,
+    pub image_url: Option<String>,
     pub session_order: Option<i32>,
 }
 
@@ -124,6 +131,7 @@ pub struct UpdateEventSessionRequest {
     pub end_time: Option<DateTime<Utc>>,
     pub speaker_name: Option<String>,
     pub speaker_user_id: Option<Uuid>,
+    pub image_url: Option<String>,
     pub session_order: Option<i32>,
 }
 
@@ -136,7 +144,7 @@ pub struct CreateEventRequest {
     pub start_time: DateTime<Utc>,
     #[serde(deserialize_with = "flexible_datetime::deserialize")]
     pub end_time: DateTime<Utc>,
-    pub banner_image_url: Option<String>,
+    pub image_url: Option<String>,
     pub category: Option<String>,
     pub tags: Option<Vec<String>>,
     pub sessions: Option<Vec<CreateEventSessionRequest>>,
@@ -151,7 +159,7 @@ pub struct UpdateEventRequest {
     pub start_time: Option<DateTime<Utc>>,
     #[serde(deserialize_with = "flexible_datetime::deserialize_option")]
     pub end_time: Option<DateTime<Utc>>,
-    pub banner_image_url: Option<String>,
+    pub image_url: Option<String>,
     pub category: Option<String>,
     pub tags: Option<Vec<String>>,
 }
@@ -218,7 +226,7 @@ impl Event {
         INSERT INTO events (
             id, organizer_id, title, description, location, 
             start_time, end_time, created_at, updated_at,
-            status, banner_image_url, category, tags
+            status, image_url, category, tags
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         RETURNING *
@@ -233,7 +241,7 @@ impl Event {
             now,
             now,
             "active",
-            event.banner_image_url,
+            event.image_url,
             event.category,
             tags_json
         )
@@ -285,10 +293,10 @@ impl Event {
                     r#"
             INSERT INTO event_sessions (
                 id, event_id, title, start_time, end_time,
-                speaker_name, speaker_user_id, session_order,
+                speaker_name, speaker_user_id, image_url, session_order,
                 created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
             "#,
                     session_id,
@@ -298,6 +306,7 @@ impl Event {
                     session_req.end_time,
                     session_req.speaker_name,
                     session_req.speaker_user_id,
+                    session_req.image_url,
                     session_order,
                     now,
                     now
@@ -402,9 +411,9 @@ impl Event {
             param_index += 1;
         }
 
-        if let Some(banner_image_url) = &update.banner_image_url {
-            query.push_str(&format!(", banner_image_url = ${}", param_index));
-            let _ = args.add(banner_image_url);
+        if let Some(image_url) = &update.image_url {
+            query.push_str(&format!(", image_url = ${}", param_index));
+            let _ = args.add(image_url);
             param_index += 1;
         }
 
@@ -532,7 +541,7 @@ impl Event {
                 } else if now >= self.start_time && now < self.end_time {
                     "ongoing".to_string() // Currently happening
                 } else {
-                    "ended".to_string() 
+                    "ended".to_string()
                 }
             }
             _ => self.status.clone(),
@@ -738,10 +747,10 @@ impl EventSession {
             r#"
             INSERT INTO event_sessions (
                 id, event_id, title, start_time, end_time,
-                speaker_name, speaker_user_id, session_order,
+                speaker_name, speaker_user_id, image_url, session_order,
                 created_at, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
             "#,
             id,
@@ -751,6 +760,7 @@ impl EventSession {
             session.end_time,
             session.speaker_name,
             session.speaker_user_id,
+            session.image_url,
             session_order,
             now,
             now
@@ -823,6 +833,12 @@ impl EventSession {
             param_index += 1;
         }
 
+        if let Some(image_url) = &update.image_url {
+            query.push_str(&format!(", image_url = ${}", param_index));
+            let _ = args.add(image_url);
+            param_index += 1;
+        }
+
         if let Some(session_order) = &update.session_order {
             query.push_str(&format!(", session_order = ${}", param_index));
             let _ = args.add(session_order);
@@ -847,18 +863,18 @@ impl EventSession {
         Ok(())
     }
 
-    pub async fn set_file_url(&self, pool: &PgPool, file_url: &str) -> Result<Self> {
+    pub async fn set_image_url(&self, pool: &PgPool, image_url: &str) -> Result<Self> {
         let now = Utc::now();
 
         let session = sqlx::query_as!(
             EventSession,
             r#"
             UPDATE event_sessions 
-            SET file_url = $1, updated_at = $2 
+            SET image_url = $1, updated_at = $2 
             WHERE id = $3 
             RETURNING *
             "#,
-            file_url,
+            image_url,
             now,
             self.id
         )

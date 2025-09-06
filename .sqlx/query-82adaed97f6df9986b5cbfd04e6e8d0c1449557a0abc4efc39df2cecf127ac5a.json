@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO event_sessions (\n                id, event_id, title, start_time, end_time,\n                speaker_name, speaker_user_id, session_order,\n                created_at, updated_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            RETURNING *\n            ",
+  "query": "\n            INSERT INTO event_sessions (\n                id, event_id, title, start_time, end_time,\n                speaker_name, speaker_user_id, image_url, session_order,\n                created_at, updated_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n            RETURNING *\n            ",
   "describe": {
     "columns": [
       {
@@ -40,7 +40,7 @@
       },
       {
         "ordinal": 7,
-        "name": "file_url",
+        "name": "image_url",
         "type_info": "Varchar"
       },
       {
@@ -68,6 +68,7 @@
         "Timestamptz",
         "Varchar",
         "Uuid",
+        "Varchar",
         "Int4",
         "Timestamptz",
         "Timestamptz"
@@ -87,5 +88,5 @@
       false
     ]
   },
-  "hash": "d084dd7ea4da60fc467dc9d1a358f3d72be365eeb72c8b68f86a23adfd271c64"
+  "hash": "82adaed97f6df9986b5cbfd04e6e8d0c1449557a0abc4efc39df2cecf127ac5a"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO events (\n            id, organizer_id, title, description, location, \n            start_time, end_time, created_at, updated_at,\n            status, banner_image_url, category, tags\n        )\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n        RETURNING *\n        ",
+  "query": "\n        INSERT INTO events (\n            id, organizer_id, title, description, location, \n            start_time, end_time, created_at, updated_at,\n            status, image_url, category, tags\n        )\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n        RETURNING *\n        ",
   "describe": {
     "columns": [
       {
@@ -55,7 +55,7 @@
       },
       {
         "ordinal": 10,
-        "name": "banner_image_url",
+        "name": "image_url",
         "type_info": "Varchar"
       },
       {
@@ -102,5 +102,5 @@
       true
     ]
   },
-  "hash": "c763603e0d9727c033f636a768627bd1f52ce6c117fb5f55ee7f60b376393af9"
+  "hash": "ceddfb536704f97343a5b96af8265df8de7554d18dfae31367232fad4ea43d30"
 }

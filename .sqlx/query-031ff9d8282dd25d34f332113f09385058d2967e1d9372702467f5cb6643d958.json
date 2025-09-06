@@ -55,7 +55,7 @@
       },
       {
         "ordinal": 10,
-        "name": "banner_image_url",
+        "name": "image_url",
         "type_info": "Varchar"
       },
       {
