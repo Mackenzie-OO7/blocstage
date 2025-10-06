@@ -70,11 +70,16 @@
       },
       {
         "ordinal": 13,
+        "name": "short_code",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 14,
         "name": "ticket_count",
         "type_info": "Int8"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "revenue",
         "type_info": "Numeric"
       }
@@ -95,6 +100,7 @@
       false,
       false,
       false,
+      true,
       true,
       true,
       true,

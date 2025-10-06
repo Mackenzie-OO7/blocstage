@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO events (\n            id, organizer_id, title, description, location, \n            start_time, end_time, created_at, updated_at,\n            status, image_url, category, tags\n        )\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n        RETURNING *\n        ",
+  "query": "\n        INSERT INTO events (\n            id, organizer_id, short_code, title, description, location,\n            start_time, end_time, created_at, updated_at,\n            status, image_url, category, tags\n        )\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)\n        RETURNING *\n        ",
   "describe": {
     "columns": [
       {
@@ -67,12 +67,18 @@
         "ordinal": 12,
         "name": "tags",
         "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 13,
+        "name": "short_code",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
         "Uuid",
+        "Varchar",
         "Varchar",
         "Text",
         "Varchar",
@@ -99,8 +105,9 @@
       false,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "ceddfb536704f97343a5b96af8265df8de7554d18dfae31367232fad4ea43d30"
+  "hash": "2b2dbfcbd344b2f0cc460220e1917ebdfcffe692c6940b3c35ffb7387a97a334"
 }

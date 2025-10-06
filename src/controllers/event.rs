@@ -171,6 +171,24 @@ pub async fn get_event(pool: web::Data<PgPool>, event_id: web::Path<Uuid>) -> im
     }
 }
 
+pub async fn get_event_by_short_code(
+    pool: web::Data<PgPool>,
+    short_code: web::Path<String>,
+) -> impl Responder {
+    match Event::find_by_short_code(&pool, &short_code).await {
+        Ok(Some(event)) => HttpResponse::Ok().json(event),
+        Ok(None) => HttpResponse::NotFound().json(ErrorResponse {
+            message: "Event not found".to_string(),
+        }),
+        Err(e) => {
+            error!("Failed to fetch event by short code: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                message: "Failed to fetch event. Please try again.".to_string(),
+            })
+        }
+    }
+}
+
 pub async fn search_events(
     pool: web::Data<PgPool>,
     query: web::Query<SearchEventsRequest>,
@@ -527,6 +545,39 @@ pub async fn get_event_with_sessions(
             error!("Failed to fetch event with sessions: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse {
                 message: "Failed to fetch event. Please try again.".to_string(),
+            })
+        }
+    }
+}
+
+pub async fn get_event_with_sessions_by_short_code(
+    pool: web::Data<PgPool>,
+    short_code: web::Path<String>,
+) -> impl Responder {
+    let event = match Event::find_by_short_code(&pool, &short_code).await {
+        Ok(Some(event)) => event,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(ErrorResponse {
+                message: "Event not found".to_string(),
+            });
+        }
+        Err(e) => {
+            error!("Failed to fetch event by short code: {}", e);
+            return HttpResponse::InternalServerError().json(ErrorResponse {
+                message: "Failed to fetch event. Please try again.".to_string(),
+            });
+        }
+    };
+
+    match EventSession::find_by_event_id(&pool, event.id).await {
+        Ok(sessions) => {
+            let event_with_sessions = crate::models::event::EventWithSessions { event, sessions };
+            HttpResponse::Ok().json(event_with_sessions)
+        }
+        Err(e) => {
+            error!("Failed to fetch event sessions: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                message: "Failed to fetch event sessions. Please try again.".to_string(),
             })
         }
     }
@@ -1578,6 +1629,14 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route(
                 "/{event_id}/sessions/{session_id}/upload",
                 web::post().to(upload_session_file),
+            ),
+    )
+    .service(
+        web::scope("/e")
+            .route("/{short_code}", web::get().to(get_event_by_short_code))
+            .route(
+                "/{short_code}/with-sessions",
+                web::get().to(get_event_with_sessions_by_short_code),
             ),
     )
     .service(

@@ -72,6 +72,7 @@ mod flexible_datetime {
 pub struct Event {
     pub id: Uuid,
     pub organizer_id: Uuid,
+    pub short_code: Option<String>,
     pub title: String,
     pub description: Option<String>,
     pub location: Option<String>,
@@ -194,8 +195,11 @@ impl Event {
             Self::validate_sessions(sessions, event.start_time, event.end_time)?;
         }
 
+        let short_code = Self::generate_unique_short_code(pool).await?;
+
         info!("🎪 Creating event with:");
         info!("   - id: {}", id);
+        info!("   - short_code: {}", short_code);
         info!("   - organizer_id: {}", organizer_id);
         info!("   - title: {}", event.title);
         info!("   - start_time: {}", event.start_time);
@@ -224,15 +228,16 @@ impl Event {
             Event,
             r#"
         INSERT INTO events (
-            id, organizer_id, title, description, location, 
+            id, organizer_id, short_code, title, description, location,
             start_time, end_time, created_at, updated_at,
             status, image_url, category, tags
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         RETURNING *
         "#,
             id,
             organizer_id,
+            short_code,
             event.title,
             event.description,
             event.location,
@@ -720,6 +725,54 @@ impl Event {
             .map_err(|e| anyhow::anyhow!("Database error during search: {}", e))?;
 
         Ok(events)
+    }
+
+    pub async fn find_by_short_code(pool: &PgPool, short_code: &str) -> Result<Option<Self>> {
+        let event = sqlx::query_as!(
+            Event,
+            r#"SELECT * FROM events WHERE short_code = $1"#,
+            short_code
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(event)
+    }
+
+    async fn generate_unique_short_code(pool: &PgPool) -> Result<String> {
+        const MAX_RETRIES: usize = 10;
+
+        for _ in 0..MAX_RETRIES {
+            let code = Self::generate_short_code(6);
+
+            let exists = sqlx::query_scalar!(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE short_code = $1)",
+                code
+            )
+            .fetch_one(pool)
+            .await?;
+
+            if !exists.unwrap_or(true) {
+                return Ok(code);
+            }
+        }
+
+        Err(anyhow!(
+            "Failed to generate unique short code after {} retries",
+            MAX_RETRIES
+        ))
+    }
+
+    fn generate_short_code(length: usize) -> String {
+        use rand::Rng;
+        const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz\
+                                 ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                                 0123456789";
+
+        let mut rng = rand::rng();
+        (0..length)
+            .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
+            .collect()
     }
 }
 

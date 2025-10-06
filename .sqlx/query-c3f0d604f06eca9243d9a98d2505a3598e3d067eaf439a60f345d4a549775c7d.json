@@ -67,6 +67,11 @@
         "ordinal": 12,
         "name": "tags",
         "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 13,
+        "name": "short_code",
+        "type_info": "Varchar"
       }
     ],
     "parameters": {
@@ -86,6 +91,7 @@
       false,
       false,
       false,
+      true,
       true,
       true,
       true
