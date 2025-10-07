@@ -3,7 +3,7 @@ use actix_web::{web, HttpResponse, Responder};
 use dotenv::dotenv;
 use log::{error, info, warn};
 use serde_json::json;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::{env, time::Duration};
 
 use blocstage::services::{SchedulerService, SponsorManager, RedisService, StellarService};
@@ -13,6 +13,7 @@ use std::sync::Arc;
 use blocstage::controllers::configure_routes;
 
 async fn health_check(
+    pool: Option<web::Data<PgPool>>,
     redis: Option<web::Data<Arc<RedisService>>>,
     email_service: Option<web::Data<Arc<EmailService>>>,
 ) -> impl Responder {
@@ -24,6 +25,15 @@ async fn health_check(
             "database": "healthy"
         }
     });
+
+    // Add connection pool stats
+    if let Some(pool) = pool.as_ref().map(|d| d.get_ref()) {
+        health_status["components"]["database_pool"] = json!({
+            "size": pool.size(),
+            "idle": pool.num_idle(),
+            "status": if pool.size() > 0 { "healthy" } else { "unhealthy" }
+        });
+    }
 
     if let Some(redis) = redis.as_ref().map(|d| d.get_ref()) {
         match redis.health_check().await {
@@ -142,14 +152,16 @@ async fn main(
 
     info!("Connecting to database...");
     let db_pool = PgPoolOptions::new()
-        .max_connections(1)
-        .min_connections(1)
+        .max_connections(20)
+        .min_connections(5)
         .acquire_timeout(Duration::from_secs(30))
         .idle_timeout(Duration::from_secs(600))
         .max_lifetime(Duration::from_secs(1800))
         .connect(&database_url)
         .await
         .expect("Failed to create database pool");
+
+    info!("✅ Database pool created with max_connections=20, min_connections=5");
 
     let redis_service: Option<Arc<RedisService>> = match RedisService::new().await {
         Ok(redis) => {

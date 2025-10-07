@@ -740,9 +740,9 @@ impl Event {
     }
 
     async fn generate_unique_short_code(pool: &PgPool) -> Result<String> {
-        const MAX_RETRIES: usize = 10;
+        const MAX_RETRIES: usize = 5;
 
-        for _ in 0..MAX_RETRIES {
+        for attempt in 0..MAX_RETRIES {
             let code = Self::generate_short_code(6);
 
             let exists = sqlx::query_scalar!(
@@ -753,10 +753,14 @@ impl Event {
             .await?;
 
             if !exists.unwrap_or(true) {
+                if attempt > 0 {
+                    info!("Generated unique short code '{}' after {} attempts", code, attempt + 1);
+                }
                 return Ok(code);
             }
         }
 
+        error!("Failed to generate unique short code after {} retries - possible collision issue", MAX_RETRIES);
         Err(anyhow!(
             "Failed to generate unique short code after {} retries",
             MAX_RETRIES
